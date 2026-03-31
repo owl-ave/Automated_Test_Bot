@@ -1,0 +1,7 @@
+.dev.vars
+.env
+.tmp-repos
+node_modules
+dist/
+.wrangler/
+*.log

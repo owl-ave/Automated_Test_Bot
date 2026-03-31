@@ -1,0 +1,9 @@
+{
+  "name": "sample-ecommerce-app",
+  "version": "1.0.0",
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.73.0",
+    "@react-navigation/native": "6.1.0"
+  }
+}

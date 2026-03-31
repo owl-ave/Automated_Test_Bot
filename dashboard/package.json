@@ -1,0 +1,8 @@
+{
+  "name": "testing-bot-dashboard",
+  "private": true,
+  "scripts": {
+    "dev": "npx wrangler pages dev ./public --port 3000",
+    "deploy": "npx wrangler pages deploy ./public --project-name testing-bot-dashboard"
+  }
+}
