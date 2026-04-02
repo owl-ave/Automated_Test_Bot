@@ -146,6 +146,15 @@ export class GitHubClient {
     }
   }
 
+  async createLabel(owner: string, repo: string, name: string): Promise<void> {
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/labels`;
+    const colors: Record<string, string> = {
+      'tests-passed': '0e8a16', 'tests-failed': 'e11d48', 'tests-warning': 'fbca04',
+      'accessibility-issues': 'd93f0b', 'performance-regression': 'f97316',
+    };
+    await axios.post(url, { name, color: colors[name] || 'ededed' }, { headers: await this.headers() });
+  }
+
   async addLabel(owner: string, repo: string, prNumber: number, labels: string[]): Promise<void> {
     try {
       const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/labels`;

@@ -16,7 +16,7 @@ export async function runApiTester(context: PipelineContext): Promise<ModuleResu
   try {
     // Discover endpoints from code
     const discovery = new EndpointDiscovery();
-    const repoPath = (context as any).repoPath || '.';
+    const repoPath = context.targetPath || '.';
     const discoveredEndpoints = await discovery.discoverEndpoints(repoPath, framework);
     logger.log('Endpoints discovered', { count: discoveredEndpoints.length });
 

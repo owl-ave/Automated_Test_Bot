@@ -30,6 +30,14 @@ export class LabelManager {
     const labelsToAdd = this.determineLabels(testResults, extra);
 
     try {
+      // Ensure labels exist on the repo before adding to PR
+      for (const label of labelsToAdd) {
+        try {
+          await this.github.createLabel(owner, repo, label);
+        } catch {
+          // Label already exists — ignore
+        }
+      }
       await this.github.addLabel(owner, repo, prNumber, labelsToAdd);
       this.logger.log('Labels updated', { prNumber, labels: labelsToAdd });
     } catch (err) {
