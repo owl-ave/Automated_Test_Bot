@@ -1,8 +1,6 @@
 name: Automated Mobile Testing Bot
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       repo:
@@ -26,16 +24,39 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - name: Checkout code
+      # ── 1. Checkout bot code (this repo) ──
+      - name: Checkout bot
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          path: bot
 
+      # ── 2. Generate token for target repo ──
+      - name: Generate GitHub App Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.event.inputs.repo && contains(github.event.inputs.repo, '/') && '' || '' }}
+          repositories: ${{ github.event.inputs.repo }}
+
+      # ── 3. Checkout target repo ──
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+          token: ${{ steps.generate-token.outputs.token }}
+          fetch-depth: 0
+          path: target
+
+      # ── 4. Setup environment ──
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
+          cache-dependency-path: bot/package-lock.json
 
       - name: Setup Java (for Android builds)
         uses: actions/setup-java@v4
@@ -43,97 +64,90 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          api-level: 34
-          ndk-version: '26.0.10957337'
-
       - name: Setup Flutter (if needed)
         run: |
-          if [ -f "pubspec.yaml" ]; then
+          if [ -f "target/pubspec.yaml" ]; then
             git clone https://github.com/flutter/flutter.git -b stable $HOME/flutter
             export PATH="$HOME/flutter/bin:$PATH"
-            flutter pub get
+            cd target && flutter pub get
           fi
 
-      - name: Install dependencies
+      # ── 5. Install & build bot ──
+      - name: Install bot dependencies
         run: npm install
+        working-directory: bot
 
-      - name: Build TypeScript
+      - name: Build bot
         run: npm run build
+        working-directory: bot
 
-      - name: Run unit tests
+      - name: Run bot unit tests
         run: npm test
+        working-directory: bot
 
-      - name: Generate GitHub App Token
-        id: generate-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
+      # ── 6. Run the bot against target repo ──
       - name: Run Automated Testing Bot
         run: |
-          PR_NUM="${{ github.event.pull_request.number || github.event.inputs.pr_number || '0' }}"
-          npm run start -- "$PR_NUM"
+          PR_NUM="${{ github.event.inputs.pr_number || '0' }}"
+          node dist/index.js "$PR_NUM"
+        working-directory: bot
         env:
+          GITHUB_TOKEN: ${{ steps.generate-token.outputs.token }}
           GITHUB_APP_ID: ${{ secrets.APP_ID }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_APP_INSTALLATION_ID: ${{ steps.generate-token.outputs.installation-id }}
-          GITHUB_REPOSITORY: ${{ github.event.inputs.repo || github.repository }}
-          GITHUB_HEAD_REF: ${{ github.event.inputs.branch || github.head_ref || 'main' }}
+          TARGET_REPO: ${{ github.event.inputs.repo }}
+          TARGET_BRANCH: ${{ github.event.inputs.branch }}
+          TARGET_PATH: ${{ github.workspace }}/target
           CLAUDE_AUTH_TOKEN: ${{ secrets.CLAUDE_AUTH_TOKEN }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           PERCY_TOKEN: ${{ secrets.PERCY_TOKEN }}
           MOBSF_API_KEY: ${{ secrets.MOBSF_API_KEY }}
-          DEBUG: ${{ secrets.DEBUG || 'false' }}
 
+      # ── 7. Upload artifacts ──
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-artifacts
+          name: test-artifacts-${{ github.run_id }}
           path: |
-            features/
-            step-definitions/
-            test-results/
+            bot/features/
+            bot/step-definitions/
+            bot/test-results/
           retention-days: 30
 
+      # ── 8. Comment on target repo PR ──
       - name: Comment on PR with results
-        if: always() && (github.event.pull_request.number || github.event.inputs.pr_number != '0')
+        if: always()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ steps.generate-token.outputs.token }}
           script: |
             const fs = require('fs');
-            const prNumber = context.issue.number || parseInt(process.env.INPUT_PR_NUMBER);
-            if (!prNumber) return;
+            const prNumber = parseInt('${{ github.event.inputs.pr_number }}') || 0;
+            if (!prNumber) { console.log('No PR number, skipping comment'); return; }
 
+            const [owner, repo] = '${{ github.event.inputs.repo }}'.split('/');
             let comment = '## 🤖 Automated Mobile Testing Bot Results\n\n';
-            if (fs.existsSync('test-results/summary.md')) {
-              comment += fs.readFileSync('test-results/summary.md', 'utf-8');
-            } else {
-              comment += 'Test execution in progress or completed. Check workflow logs for details.';
-            }
+            const summaryPath = '${{ github.workspace }}/bot/test-results/summary.md';
+            comment += fs.existsSync(summaryPath)
+              ? fs.readFileSync(summaryPath, 'utf-8')
+              : 'Test execution completed. Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.';
 
-            const [owner, repo] = (process.env.GITHUB_REPOSITORY || context.repo.owner + '/' + context.repo.repo).split('/');
             await github.rest.issues.createComment({ issue_number: prNumber, owner, repo, body: comment });
-        env:
-          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '0' }}
 
       - name: Notify on failure
-        if: failure() && (github.event.pull_request.number || github.event.inputs.pr_number != '0')
+        if: failure()
         uses: actions/github-script@v7
         with:
+          github-token: ${{ steps.generate-token.outputs.token }}
           script: |
-            const prNumber = context.issue.number || parseInt(process.env.INPUT_PR_NUMBER);
-            if (!prNumber) return;
+            const prNumber = parseInt('${{ github.event.inputs.pr_number }}') || 0;
+            if (!prNumber) { console.log('No PR number, skipping comment'); return; }
 
-            const [owner, repo] = (process.env.GITHUB_REPOSITORY || context.repo.owner + '/' + context.repo.repo).split('/');
+            const [owner, repo] = '${{ github.event.inputs.repo }}'.split('/');
             await github.rest.issues.createComment({
               issue_number: prNumber, owner, repo,
-              body: '❌ Automated Mobile Testing Bot failed. Check the workflow logs for details.'
+              body: '❌ Automated Mobile Testing Bot failed. Check [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
             });
-        env:
-          INPUT_PR_NUMBER: ${{ github.event.inputs.pr_number || '0' }}
