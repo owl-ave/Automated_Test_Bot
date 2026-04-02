@@ -82,7 +82,7 @@ jobs:
 
       # ── 5. Install & build bot ──
       - name: Install bot dependencies
-        run: npm install
+        run: npm install --include=dev
         working-directory: bot
 
       - name: Build bot
