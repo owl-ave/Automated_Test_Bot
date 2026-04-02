@@ -24,7 +24,7 @@ export class DeviceSizeTester {
 
   constructor(percy: PercyAppIntegration) {
     this.percy = percy;
-    this.claude = process.env.CLAUDE_AUTH_TOKEN ? new ClaudeClient() : null;
+    this.claude = process.env.CLAUDE_CODE_OAUTH_TOKEN ? new ClaudeClient() : null;
   }
 
   async captureAcrossDevices(scenarios: string[], devices: Device[]): Promise<Map<string, string>> {

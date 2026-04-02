@@ -5,7 +5,7 @@ import { Logger } from '../../utils/logger';
 export async function runScenarioBrain(context: PipelineContext): Promise<ModuleResult> {
   const logger = new Logger('ScenarioBrain');
 
-  if (!context.codeAnalysis || !process.env.CLAUDE_AUTH_TOKEN) {
+  if (!context.codeAnalysis || !process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return { moduleName: 'ScenarioBrain', status: 'error', error: 'Missing analysis or auth token' };
   }
 

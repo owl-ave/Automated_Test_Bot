@@ -84,6 +84,7 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
 
     context.diffFiles = diffFiles;
     context.codeAnalysis = codeAnalysis;
+    context.mobilePath = codeAnalysis.mobilePath;
 
     logger.log('Code reading complete', { repoPath, filesChanged: diffFiles.length, framework: codeAnalysis.framework, screens: codeAnalysis.screens.length });
 

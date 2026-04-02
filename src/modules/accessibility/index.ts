@@ -96,7 +96,7 @@ export async function runAccessibility(context: PipelineContext): Promise<Module
 
     // Generate fix suggestions
     let fixes: AccessibilityFix[] = [];
-    if (process.env.CLAUDE_AUTH_TOKEN && allIssues.length > 0) {
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN && allIssues.length > 0) {
       const suggester = new AccessibilityFixSuggester();
       fixes = await suggester.suggestFixes(allIssues, framework);
     }

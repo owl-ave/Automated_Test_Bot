@@ -9,50 +9,73 @@ export interface FrameworkDetection {
   evidence: string[];
   language: string;
   buildSystem: string;
+  mobilePath: string;
 }
 
 export class FrameworkDetector {
   private logger = new Logger('FrameworkDetector');
 
   detect(rootPath: string): FrameworkDetection {
-    const detections: { detection: FrameworkDetection; score: number }[] = [];
+    // First check root, then scan common subdirectories
+    const dirsToCheck = [rootPath];
 
-    detections.push({ detection: this.checkReactNative(rootPath), score: 0 });
-    detections.push({ detection: this.checkFlutter(rootPath), score: 0 });
-    detections.push({ detection: this.checkKotlin(rootPath), score: 0 });
-    detections.push({ detection: this.checkSwift(rootPath), score: 0 });
+    try {
+      const entries = fs.readdirSync(rootPath);
+      for (const entry of entries) {
+        if (entry.startsWith('.') || entry === 'node_modules' || entry === 'build' || entry === 'dist') continue;
+        const fullPath = path.join(rootPath, entry);
+        try {
+          if (fs.statSync(fullPath).isDirectory()) {
+            dirsToCheck.push(fullPath);
+          }
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
 
-    for (const d of detections) {
-      d.score = d.detection.confidence;
+    let bestOverall: { detection: FrameworkDetection; score: number } | null = null;
+
+    for (const dir of dirsToCheck) {
+      const detections = [
+        this.checkReactNative(dir),
+        this.checkFlutter(dir),
+        this.checkKotlin(dir),
+        this.checkSwift(dir),
+      ];
+
+      for (const detection of detections) {
+        if (!bestOverall || detection.confidence > bestOverall.score) {
+          bestOverall = { detection, score: detection.confidence };
+        }
+      }
     }
 
-    detections.sort((a, b) => b.score - a.score);
-    const best = detections[0];
-
-    if (best.score === 0) {
-      this.logger.warn('No framework detected, defaulting to native');
+    if (!bestOverall || bestOverall.score === 0) {
+      this.logger.warn('No framework detected in any directory, defaulting to native');
       return {
         framework: 'native',
         confidence: 0,
         evidence: [],
         language: 'unknown',
         buildSystem: 'unknown',
+        mobilePath: rootPath,
       };
     }
 
     this.logger.log('Framework detected', {
-      framework: best.detection.framework,
-      subFramework: best.detection.subFramework,
-      confidence: best.detection.confidence,
+      framework: bestOverall.detection.framework,
+      subFramework: bestOverall.detection.subFramework,
+      confidence: bestOverall.detection.confidence,
+      mobilePath: bestOverall.detection.mobilePath,
     });
 
-    return best.detection;
+    return bestOverall.detection;
   }
 
-  private checkReactNative(rootPath: string): FrameworkDetection {
+  private checkReactNative(dirPath: string): FrameworkDetection {
     const evidence: string[] = [];
     let confidence = 0;
     let subFramework: 'expo' | undefined;
+    const rootPath = dirPath;
 
     const packageJsonPath = path.join(rootPath, 'package.json');
     if (fs.existsSync(packageJsonPath)) {
@@ -113,6 +136,7 @@ export class FrameworkDetector {
       evidence,
       language: 'TypeScript/JavaScript',
       buildSystem: subFramework === 'expo' ? 'expo' : 'metro',
+      mobilePath: dirPath,
     };
   }
 
@@ -162,6 +186,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Dart',
       buildSystem: 'flutter',
+      mobilePath: rootPath,
     };
   }
 
@@ -226,6 +251,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Kotlin',
       buildSystem: 'gradle',
+      mobilePath: rootPath,
     };
   }
 
@@ -293,6 +319,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Swift',
       buildSystem: 'xcode',
+      mobilePath: rootPath,
     };
   }
 

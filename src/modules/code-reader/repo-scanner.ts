@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { CodeAnalysis, Screen, ApiEndpoint } from '../../types';
+import { FrameworkDetector } from './framework-detector';
 import { Logger } from '../../utils/logger';
 
 export class RepoScanner {
@@ -11,13 +12,17 @@ export class RepoScanner {
     this.rootPath = rootPath;
   }
 
-  scan(): CodeAnalysis {
-    const framework = this.detectFramework();
-    const screens = this.scanScreens(framework);
+  scan(): CodeAnalysis & { mobilePath: string } {
+    const detector = new FrameworkDetector();
+    const detection = detector.detect(this.rootPath);
+    const framework = detection.framework;
+    const mobilePath = detection.mobilePath;
+    const screens = this.scanScreens(framework, mobilePath);
     const apiEndpoints = this.scanApiEndpoints();
 
     this.logger.log('Repo scan complete', {
       framework,
+      mobilePath,
       screenCount: screens.length,
       endpointCount: apiEndpoints.length,
     });
@@ -28,26 +33,11 @@ export class RepoScanner {
       apiEndpoints,
       industry: 'unknown',
       criticalFlows: [],
+      mobilePath,
     };
   }
 
-  private detectFramework(): 'react-native' | 'flutter' | 'swift' | 'kotlin' | 'native' {
-    const packageJson = path.join(this.rootPath, 'package.json');
-    const pubspecYaml = path.join(this.rootPath, 'pubspec.yaml');
-    const buildGradle = path.join(this.rootPath, 'build.gradle');
-    const xcodeprojPath = this.findInTree('*.xcodeproj', this.rootPath);
-
-    if (fs.existsSync(packageJson)) {
-      const content = fs.readFileSync(packageJson, 'utf-8');
-      if (content.includes('react-native')) return 'react-native';
-    }
-    if (fs.existsSync(pubspecYaml)) return 'flutter';
-    if (fs.existsSync(buildGradle)) return 'kotlin';
-    if (xcodeprojPath) return 'swift';
-    return 'native';
-  }
-
-  private scanScreens(framework: string): Screen[] {
+  private scanScreens(framework: string, mobilePath: string): Screen[] {
     const screens: Screen[] = [];
     let searchDir = '';
     let fileExt = '';
@@ -60,8 +50,8 @@ export class RepoScanner {
       fileExt = '.dart';
     }
 
-    if (searchDir && fs.existsSync(path.join(this.rootPath, searchDir))) {
-      const files = this.walkDir(path.join(this.rootPath, searchDir));
+    if (searchDir && fs.existsSync(path.join(mobilePath, searchDir))) {
+      const files = this.walkDir(path.join(mobilePath, searchDir));
       files.forEach((file) => {
         if (file.endsWith(fileExt)) {
           screens.push({

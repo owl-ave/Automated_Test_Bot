@@ -4,6 +4,7 @@ export interface PipelineContext {
   repoName: string;
   branch: string;
   targetPath: string;
+  mobilePath?: string;
   diffFiles: DiffFile[];
   codeAnalysis?: CodeAnalysis;
   scenariosBdd?: BddScenario[];

@@ -116,7 +116,7 @@ async function main(): Promise<void> {
 
   // Validate required environment variables early
   const missingVars: string[] = [];
-  const requiredVars = ['CLAUDE_AUTH_TOKEN'];
+  const requiredVars = ['CLAUDE_CODE_OAUTH_TOKEN'];
   const requiredIfNotLocal = ['BROWSERSTACK_USERNAME', 'BROWSERSTACK_ACCESS_KEY'];
   const requiredGitHub = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY'];
 

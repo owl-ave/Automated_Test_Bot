@@ -40,7 +40,7 @@ async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
 
 export class ClaudeClient {
   constructor() {
-    // Agent SDK uses CLAUDE_AUTH_TOKEN from environment automatically
+    // Agent SDK uses CLAUDE_CODE_OAUTH_TOKEN from environment automatically
   }
 
   async analyzeCode(codeSnippet: string, instruction: string): Promise<string> {

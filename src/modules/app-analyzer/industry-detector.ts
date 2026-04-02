@@ -6,7 +6,7 @@ export class IndustryDetector {
   private logger = new Logger('IndustryDetector');
 
   async detect(analysis: CodeAnalysis): Promise<string> {
-    if (process.env.CLAUDE_AUTH_TOKEN) {
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
       try {
         const claude = new ClaudeClient();
         const prompt = `Analyze this code mapping and determine the primary industry of the mobile app.
