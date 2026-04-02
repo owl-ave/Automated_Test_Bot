@@ -3,6 +3,7 @@ export interface PipelineContext {
   repoOwner: string;
   repoName: string;
   branch: string;
+  targetPath: string;
   diffFiles: DiffFile[];
   codeAnalysis?: CodeAnalysis;
   scenariosBdd?: BddScenario[];

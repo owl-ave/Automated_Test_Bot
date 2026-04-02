@@ -80,9 +80,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const repoOwner = process.env.GITHUB_REPOSITORY?.split('/')[0] || '';
-  const repoName = process.env.GITHUB_REPOSITORY?.split('/')[1] || '';
-  let branch = process.env.GITHUB_HEAD_REF || '';
+  // TARGET_REPO = the repo being tested (e.g. owl-ave/Nola), set by workflow
+  // GITHUB_REPOSITORY = fallback (the bot's own repo)
+  const targetRepo = process.env.TARGET_REPO || process.env.GITHUB_REPOSITORY || '';
+  const repoOwner = targetRepo.split('/')[0] || '';
+  const repoName = targetRepo.split('/')[1] || '';
+  let branch = process.env.TARGET_BRANCH || process.env.GITHUB_HEAD_REF || '';
 
   // Fetch PR branch from GitHub if not explicitly set
   if (!branch && prNumber > 0 && repoOwner && repoName) {
@@ -98,11 +101,15 @@ async function main(): Promise<void> {
   }
   if (!branch) branch = 'main';
 
+  // TARGET_PATH = where the target repo is checked out (set by workflow)
+  const targetPath = process.env.TARGET_PATH || process.cwd();
+
   const context: PipelineContext = {
     prNumber,
     repoOwner,
     repoName,
     branch,
+    targetPath,
     diffFiles: [],
     logs: [],
   };
