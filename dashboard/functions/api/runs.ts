@@ -1,13 +1,13 @@
-import { GitHubAppEnv, ghHeaders } from './_github-app';
+import { GitHubAppEnv, ghHeaders, getTokenForRepo } from './_github-app';
 
 export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
   const botRepo = context.env.BOT_REPO;
-  if (!botRepo) return Response.json([]);
+  if (!botRepo || !context.env.APP_ID || !context.env.APP_PRIVATE_KEY_B64) return Response.json([]);
 
-  const token = context.env.GITHUB_PAT;
-  if (!token) return Response.json([]);
+  const [owner, repo] = botRepo.split('/');
 
   try {
+    const token = await getTokenForRepo(context.env, owner, repo);
     const res = await fetch(`https://api.github.com/repos/${botRepo}/actions/workflows/test-bot.yml/runs?per_page=20`, {
       headers: ghHeaders(token),
     });

@@ -1,8 +1,8 @@
 import { GitHubAppEnv, getInstalledRepos } from './_github-app';
 
 export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
-  if (!context.env.APP_ID || !context.env.APP_PRIVATE_KEY) {
-    return Response.json({ error: 'APP_ID and APP_PRIVATE_KEY not configured' }, { status: 500 });
+  if (!context.env.APP_ID || !context.env.APP_PRIVATE_KEY_B64) {
+    return Response.json({ error: 'APP_ID and APP_PRIVATE_KEY_B64 not configured' }, { status: 500 });
   }
 
   try {

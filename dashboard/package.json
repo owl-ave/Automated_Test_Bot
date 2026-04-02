@@ -2,7 +2,13 @@
   "name": "testing-bot-dashboard",
   "private": true,
   "scripts": {
-    "dev": "npx wrangler pages dev ./public --port 3000",
-    "deploy": "npx wrangler pages deploy ./public --project-name testing-bot-dashboard"
+    "dev": "npx wrangler pages dev ./public",
+    "deploy": "npx wrangler pages deploy ./public --project-name corvus-ui-apptesting"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260402.1"
   }
 }
