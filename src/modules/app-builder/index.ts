@@ -57,10 +57,25 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
 
     // --- Option 2: Build locally (CI with Android SDK / Xcode) ---
 
+    // Check if target repo is a mobile project
+    const fs = await import('fs');
+    const hasGradlew = fs.existsSync(path.join(context.targetPath, 'gradlew')) ||
+                       fs.existsSync(path.join(context.targetPath, 'android', 'gradlew'));
+    const hasXcodeProj = fs.readdirSync(context.targetPath).some((f: string) =>
+      f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj'));
+    const hasPubspec = fs.existsSync(path.join(context.targetPath, 'pubspec.yaml'));
+    const hasReactNative = fs.existsSync(path.join(context.targetPath, 'package.json')) &&
+      fs.readFileSync(path.join(context.targetPath, 'package.json'), 'utf-8').includes('react-native');
+
+    if (!hasGradlew && !hasXcodeProj && !hasPubspec && !hasReactNative) {
+      logger.warn('No mobile project detected in target repo — skipping app build');
+      return { moduleName: 'AppBuilder', status: 'warning', error: 'No mobile project found in target repo' };
+    }
+
     // Build Android
     try {
       logger.log('Starting Android build');
-      const androidBuilder = new AndroidBuilder(process.cwd());
+      const androidBuilder = new AndroidBuilder(context.targetPath);
       const androidApkPath = await androidBuilder.build();
 
       logger.log('Android APK built, uploading to BrowserStack', { apkPath: androidApkPath });
@@ -78,7 +93,7 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
     // Build iOS
     try {
       logger.log('Starting iOS build');
-      const iosBuilder = new IosBuilder(process.cwd());
+      const iosBuilder = new IosBuilder(context.targetPath);
       const iosIpaPath = await iosBuilder.build();
 
       logger.log('iOS IPA built, uploading to BrowserStack', { ipaPath: iosIpaPath });

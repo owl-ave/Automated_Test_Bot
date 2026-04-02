@@ -92,7 +92,9 @@ export async function runSelfHealer(context: PipelineContext): Promise<ModuleRes
 
     // Update feature files based on code changes
     if (context.diffFiles && context.diffFiles.length > 0) {
-      const featureUpdates = await featureUpdater.updateAllFeatureFiles('features', context.diffFiles);
+      const path = await import('path');
+      const featureDir = path.join(context.targetPath, 'features');
+      const featureUpdates = await featureUpdater.updateAllFeatureFiles(featureDir, context.diffFiles);
 
       summary.featureUpdates = featureUpdates;
       summary.featuresUpdated = featureUpdates.filter((u) => u.updated).length;

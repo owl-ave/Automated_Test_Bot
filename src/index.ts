@@ -149,7 +149,7 @@ async function main(): Promise<void> {
     // 0. App Builder (skip in local mode — needs Android SDK / Xcode)
     if (!localMode) {
       const { runAppBuilder } = await import('./modules/app-builder');
-      await executeStep(context, 'AppBuilder', () => runAppBuilder(context), true);
+      await executeStep(context, 'AppBuilder', () => runAppBuilder(context), false);
     } else {
       logger.log('LOCAL_MODE: Skipping AppBuilder (no build tools needed)');
     }

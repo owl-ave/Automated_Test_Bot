@@ -120,7 +120,6 @@ jobs:
         with:
           name: test-artifacts-${{ github.run_id }}
           path: |
-            bot/features/
             bot/step-definitions/
             bot/test-results/
           retention-days: 30
