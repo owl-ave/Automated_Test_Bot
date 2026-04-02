@@ -10,15 +10,25 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
   const logger = new Logger('CodeReader');
 
   try {
-    // Use target repo path if set (CI), otherwise fall back to cwd
     let repoPath = context.targetPath || process.cwd();
     const repoSlug = `${context.repoOwner}/${context.repoName}`;
 
-    // If GITHUB_REPOSITORY doesn't match current dir, clone the target repo
-    const currentPackage = path.join(repoPath, 'package.json');
-    const isTargetRepo = fs.existsSync(currentPackage) && fs.readFileSync(currentPackage, 'utf-8').includes(context.repoName);
+    // Check if target repo is already checked out (CI workflow checks it out to target/)
+    const hasGitDir = fs.existsSync(path.join(repoPath, '.git'));
 
-    if (!isTargetRepo && context.repoOwner && context.repoName) {
+    if (hasGitDir) {
+      logger.log('Using pre-checked-out target repo', { path: repoPath });
+      // Ensure we're on the PR branch, not just main
+      if (context.branch && context.branch !== 'main') {
+        try {
+          execSync(`git fetch origin ${context.branch} && git checkout ${context.branch}`, { cwd: repoPath, stdio: 'pipe' });
+          logger.log('Checked out PR branch', { branch: context.branch });
+        } catch {
+          logger.warn('Could not checkout PR branch, using current branch');
+        }
+      }
+    } else if (context.repoOwner && context.repoName) {
+      // Not checked out — clone it (local dev mode)
       const cloneDir = path.join(repoPath, '.tmp-repos', context.repoName);
 
       if (!fs.existsSync(cloneDir)) {
@@ -30,20 +40,14 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
           ? `https://x-access-token:${token}@github.com/${repoSlug}.git`
           : `https://github.com/${repoSlug}.git`;
 
-        // Clone with the PR branch directly if available
-        const cloneBranch = context.branch && context.branch !== 'main' ? context.branch : '';
-        const branchFlag = cloneBranch ? `-b ${cloneBranch}` : '';
+        const branchFlag = context.branch ? `-b ${context.branch}` : '';
         execSync(`git clone --depth 50 ${branchFlag} ${cloneUrl} "${cloneDir}"`, { stdio: 'pipe' });
-        if (cloneBranch) logger.log('Cloned PR branch directly', { branch: cloneBranch });
-
-        logger.log('Repo cloned', { path: cloneDir });
+        logger.log('Repo cloned', { path: cloneDir, branch: context.branch });
       } else {
         logger.log('Using cached repo clone', { path: cloneDir });
         try {
           execSync('git pull --ff-only', { cwd: cloneDir, stdio: 'pipe' });
-        } catch {
-          // pull might fail if detached, that's ok
-        }
+        } catch { /* ignore */ }
       }
 
       repoPath = cloneDir;

@@ -11,9 +11,21 @@ export const onRequestPost: PagesFunction<GitHubAppEnv> = async (context) => {
   if (!botRepo) return Response.json({ error: 'BOT_REPO not configured' }, { status: 500 });
 
   try {
-    // Use installation token for the bot repo to dispatch workflow
     const [botOwner, botRepoName] = botRepo.split('/');
     const token = await getTokenForRepo(context.env, botOwner, botRepoName);
+
+    // If PR number given but no branch, fetch PR branch automatically
+    let targetBranch = branch || 'main';
+    if (prNumber && !branch) {
+      try {
+        const targetToken = await getTokenForRepo(context.env, repoOwner, repoName);
+        const prRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/pulls/${prNumber}`, {
+          headers: ghHeaders(targetToken),
+        });
+        const prData = await prRes.json() as any;
+        if (prData.head?.ref) targetBranch = prData.head.ref;
+      } catch { /* fallback to main */ }
+    }
 
     const res = await fetch(`https://api.github.com/repos/${botRepo}/actions/workflows/test-bot.yml/dispatches`, {
       method: 'POST',
@@ -23,7 +35,7 @@ export const onRequestPost: PagesFunction<GitHubAppEnv> = async (context) => {
         inputs: {
           repo: `${repoOwner}/${repoName}`,
           pr_number: prNumber ? String(prNumber) : '0',
-          branch: branch || 'main',
+          branch: targetBranch,
         },
       }),
     });
