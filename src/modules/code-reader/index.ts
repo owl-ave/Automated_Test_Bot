@@ -10,8 +10,8 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
   const logger = new Logger('CodeReader');
 
   try {
-    // Determine repo path: clone if running against a remote repo, else use cwd
-    let repoPath = process.cwd();
+    // Use target repo path if set (CI), otherwise fall back to cwd
+    let repoPath = context.targetPath || process.cwd();
     const repoSlug = `${context.repoOwner}/${context.repoName}`;
 
     // If GITHUB_REPOSITORY doesn't match current dir, clone the target repo
