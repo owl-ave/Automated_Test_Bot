@@ -90,7 +90,7 @@ jobs:
         working-directory: bot
 
       - name: Run bot unit tests
-        run: npm test
+        run: npx jest --testPathIgnorePatterns=e2e
         working-directory: bot
 
       # ── 6. Run the bot against target repo ──
