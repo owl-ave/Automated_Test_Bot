@@ -10,6 +10,12 @@ const logger = new Logger('TestExecutor');
 
 const HUB_URL = 'https://hub.browserstack.com/wd/hub';
 
+const TIMEOUTS = {
+  ELEMENT_WAIT: 5000,
+  ELEMENT_ASSERT_WAIT: 10000,
+  STEP_INITIAL_RETRY_DELAY: 1000,
+} as const;
+
 interface SessionInfo {
   sessionId: string;
   driver: any;
@@ -123,6 +129,7 @@ export class TestExecutor {
         scenario: scenario.scenario,
         status: 'pass',
         device: session.device.name,
+        sessionId: session.sessionId,
         duration: Date.now() - startTime,
         screenshot,
       };
@@ -137,6 +144,7 @@ export class TestExecutor {
         scenario: scenario.scenario,
         status: 'fail',
         device: session.device.name,
+        sessionId: session.sessionId,
         duration: Date.now() - startTime,
         error: String(error),
         screenshot,
@@ -149,13 +157,13 @@ export class TestExecutor {
 
     const action = this.parseStepAction(step.text);
     let attempt = 1;
-    let delayMs = 1000;
+    let delayMs = TIMEOUTS.STEP_INITIAL_RETRY_DELAY;
 
     while (attempt <= maxRetries) {
       try {
         // Predictive gatekeeping: wait for element availability before interacting
         if (['tap', 'type', 'longpress'].includes(action.type) && action.target) {
-          await this.waitForElement(session.driver, action.target, 5000);
+          await this.waitForElement(session.driver, action.target, TIMEOUTS.ELEMENT_WAIT);
         }
 
         switch (action.type) {
@@ -175,10 +183,10 @@ export class TestExecutor {
             await this.gestures.longPress(session.driver, action.target!, action.duration);
             break;
           case 'wait':
-            await this.waitForElement(session.driver, action.target!, action.duration || 10000);
+            await this.waitForElement(session.driver, action.target!, action.duration || TIMEOUTS.ELEMENT_ASSERT_WAIT);
             break;
           case 'assert_visible':
-            await this.waitForElement(session.driver, action.target!, 10000);
+            await this.waitForElement(session.driver, action.target!, TIMEOUTS.ELEMENT_ASSERT_WAIT);
             await this.assertElementVisible(session.driver, action.target!);
             break;
           case 'assert_text':

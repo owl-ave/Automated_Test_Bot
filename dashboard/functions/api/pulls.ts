@@ -1,4 +1,4 @@
-import { GitHubAppEnv, ghHeaders } from './_github-app';
+import { GitHubAppEnv, getTokenForRepo, ghHeaders } from './_github-app';
 
 export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
   const url = new URL(context.request.url);
@@ -9,10 +9,8 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
     return Response.json({ error: 'owner and repo query params required' }, { status: 400 });
   }
 
-  const token = context.env.GITHUB_PAT;
-  if (!token) return Response.json({ error: 'GITHUB_PAT not configured' }, { status: 500 });
-
   try {
+    const token = await getTokenForRepo(context.env, owner, repo);
     const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=50`, {
       headers: ghHeaders(token),
     });

@@ -5,15 +5,34 @@ const logger = new Logger('ClaudeClient');
 
 async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
   let result = '';
-  for await (const message of query({
-    prompt,
-    options: {
-      maxTurns,
-      model: 'claude-opus-4-6',
-    },
-  })) {
-    if ('result' in message) {
-      result = message.result;
+  try {
+    for await (const message of query({
+      prompt,
+      options: {
+        maxTurns,
+        model: 'claude-sonnet-4-6',
+      },
+    })) {
+      if ('result' in message) {
+        result = message.result;
+      }
+    }
+  } catch (error: any) {
+    logger.error('Claude Agent SDK query failed', { message: error.message });
+    // Retry once
+    try {
+      logger.log('Retrying Claude query...');
+      for await (const message of query({
+        prompt,
+        options: { maxTurns, model: 'claude-sonnet-4-6' },
+      })) {
+        if ('result' in message) {
+          result = message.result;
+        }
+      }
+    } catch (retryError: any) {
+      logger.error('Claude query retry also failed', { message: retryError.message });
+      throw retryError;
     }
   }
   return result;

@@ -80,6 +80,7 @@ export interface TestResult {
   scenario: string;
   status: 'pass' | 'fail' | 'warn';
   device: string;
+  sessionId?: string;
   duration: number;
   screenshot?: string;
   error?: string;

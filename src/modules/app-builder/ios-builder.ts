@@ -46,9 +46,16 @@ export class IosBuilder {
         execSync('pod install', { cwd: iosDir, stdio: 'inherit' });
       }
 
-      // Build with xcodebuild
+      // Dynamically detect workspace and scheme
+      const workspaceFile = this.findWorkspaceOrProject();
+      if (!workspaceFile) throw new Error('iOS workspace or project not found in ios/ directory');
+
+      const isWorkspace = workspaceFile.endsWith('.xcworkspace');
+      const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
+      const schemeName = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
+
       execSync(
-        'xcodebuild -workspace ios/RNProject.xcworkspace -scheme RNProject -configuration Release -derivedDataPath build',
+        `xcodebuild ${workspaceArg} -scheme ${schemeName} -configuration Release -derivedDataPath build -sdk iphoneos`,
         {
           cwd: this.rootPath,
           stdio: 'inherit',

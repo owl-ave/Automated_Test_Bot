@@ -27,7 +27,7 @@ Scenario: Happy Path Login
   Given the app is launched
   And user is on "login_screen"
   When user types "test@example.com" in "email_input"
-  And user types "password123" in "password_input"
+  And user types "<test_password>" in "password_input"
   And user taps on "submit_button"
   And user waits for "home_dashboard"
   Then user should see "home_dashboard"

@@ -107,9 +107,36 @@ async function main(): Promise<void> {
     logs: [],
   };
 
-  logger.log('Pipeline orchestrator starting in hardened mode.', { pr: prNumber, branch: context.branch });
+  // Validate required environment variables early
+  const missingVars: string[] = [];
+  const requiredVars = ['CLAUDE_AUTH_TOKEN'];
+  const requiredIfNotLocal = ['BROWSERSTACK_USERNAME', 'BROWSERSTACK_ACCESS_KEY'];
+  const requiredGitHub = ['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY'];
+
+  for (const v of requiredVars) {
+    if (!process.env[v]) missingVars.push(v);
+  }
 
   const localMode = process.env.LOCAL_MODE === 'true';
+
+  if (!localMode) {
+    for (const v of requiredIfNotLocal) {
+      if (!process.env[v]) missingVars.push(v);
+    }
+  }
+
+  // GitHub auth: need either GITHUB_TOKEN or GITHUB_APP_ID + GITHUB_APP_PRIVATE_KEY
+  if (!process.env.GITHUB_TOKEN && !process.env.GITHUB_APP_ID) {
+    missingVars.push('GITHUB_TOKEN or GITHUB_APP_ID');
+  }
+
+  if (missingVars.length > 0) {
+    logger.error(`Missing required environment variables: ${missingVars.join(', ')}`);
+    logger.error('Set these in .env or as GitHub Action secrets before running the pipeline.');
+    process.exit(1);
+  }
+
+  logger.log('Pipeline orchestrator starting in hardened mode.', { pr: prNumber, branch: context.branch });
 
   try {
     // 0. App Builder (skip in local mode — needs Android SDK / Xcode)

@@ -70,16 +70,16 @@ jobs:
         id: generate-token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ secrets.GITHUB_APP_ID }}
-          private-key: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
       - name: Run Automated Testing Bot
         run: |
           PR_NUM="${{ github.event.pull_request.number || github.event.inputs.pr_number || '0' }}"
           npm run start -- "$PR_NUM"
         env:
-          GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
-          GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_ID: ${{ secrets.APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_APP_INSTALLATION_ID: ${{ steps.generate-token.outputs.installation-id }}
           GITHUB_REPOSITORY: ${{ github.event.inputs.repo || github.repository }}
           GITHUB_HEAD_REF: ${{ github.event.inputs.branch || github.head_ref || 'main' }}

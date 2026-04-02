@@ -13,33 +13,39 @@ interface GitHubAppConfig {
 function generateJWT(appId: string, privateKey: string): string {
   const now = Math.floor(Date.now() / 1000);
   const payload = {
-    iat: now - 60, // issued 60s ago to account for clock drift
-    exp: now + 10 * 60, // expires in 10 minutes
+    iat: now - 60,
+    exp: now + 10 * 60,
     iss: appId,
   };
   return jwt.sign(payload, privateKey, { algorithm: 'RS256' });
 }
 
 async function getInstallationToken(appId: string, privateKey: string, installationId?: string): Promise<string> {
-  const jwtToken = generateJWT(appId, privateKey);
   const baseUrl = 'https://api.github.com';
 
-  // If no installation ID provided, get the first one
-  if (!installationId) {
-    const res = await axios.get(`${baseUrl}/app/installations`, {
-      headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
-    });
-    if (!res.data.length) throw new Error('No GitHub App installations found');
-    installationId = res.data[0].id;
+  try {
+    const jwtToken = generateJWT(appId, privateKey);
+
+    if (!installationId) {
+      const res = await axios.get(`${baseUrl}/app/installations`, {
+        headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' },
+      });
+      if (!res.data.length) throw new Error('No GitHub App installations found');
+      installationId = res.data[0].id;
+    }
+
+    const res = await axios.post(
+      `${baseUrl}/app/installations/${installationId}/access_tokens`,
+      {},
+      { headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' } },
+    );
+
+    return res.data.token;
+  } catch (error: any) {
+    const msg = error.response?.data?.message || error.message;
+    logger.error('Failed to get GitHub App installation token', { message: msg, status: error.response?.status });
+    throw new Error(`GitHub App auth failed: ${msg}`);
   }
-
-  const res = await axios.post(
-    `${baseUrl}/app/installations/${installationId}/access_tokens`,
-    {},
-    { headers: { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' } },
-  );
-
-  return res.data.token;
 }
 
 export class GitHubClient {
@@ -50,17 +56,14 @@ export class GitHubClient {
 
   constructor(tokenOrAppId?: string, privateKey?: string, installationId?: string) {
     if (privateKey) {
-      // GitHub App mode
       this.appConfig = {
         appId: tokenOrAppId || process.env.GITHUB_APP_ID || '',
         privateKey,
         installationId: installationId || process.env.GITHUB_APP_INSTALLATION_ID,
       };
     } else if (tokenOrAppId) {
-      // Legacy PAT mode (for backwards compat)
       this.token = tokenOrAppId;
     } else {
-      // Auto-detect from env
       const appId = process.env.GITHUB_APP_ID;
       const pk = process.env.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, '\n');
       if (appId && pk) {
@@ -76,7 +79,6 @@ export class GitHubClient {
   }
 
   private async getToken(): Promise<string> {
-    // If using GitHub App, generate/refresh installation token
     if (this.appConfig) {
       const now = Date.now();
       if (!this.token || now >= this.tokenExpiresAt) {
@@ -86,7 +88,7 @@ export class GitHubClient {
           this.appConfig.privateKey,
           this.appConfig.installationId,
         );
-        this.tokenExpiresAt = now + 55 * 60 * 1000; // refresh 5 min before 1hr expiry
+        this.tokenExpiresAt = now + 55 * 60 * 1000;
       }
     }
     return this.token || '';
@@ -101,24 +103,33 @@ export class GitHubClient {
   }
 
   async getPR(owner: string, repo: string, prNumber: number): Promise<any> {
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`;
-    const res = await axios.get(url, { headers: await this.headers() });
-    return res.data;
+    try {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/pulls/${prNumber}`;
+      const res = await axios.get(url, { headers: await this.headers() });
+      return res.data;
+    } catch (error: any) {
+      logger.error('Failed to get PR', { owner, repo, prNumber, message: error.message });
+      throw error;
+    }
   }
 
   async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
-    const headers = await this.headers();
+    try {
+      const headers = await this.headers();
 
-    // Find existing bot comment to update instead of creating duplicate
-    const existingId = await this.findBotComment(owner, repo, prNumber);
-    if (existingId) {
-      const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/comments/${existingId}`;
-      await axios.patch(url, { body }, { headers });
-      return;
+      const existingId = await this.findBotComment(owner, repo, prNumber);
+      if (existingId) {
+        const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/comments/${existingId}`;
+        await axios.patch(url, { body }, { headers });
+        return;
+      }
+
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
+      await axios.post(url, { body }, { headers });
+    } catch (error: any) {
+      logger.error('Failed to post comment', { owner, repo, prNumber, message: error.message });
+      throw error;
     }
-
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
-    await axios.post(url, { body }, { headers });
   }
 
   private async findBotComment(owner: string, repo: string, prNumber: number): Promise<number | null> {
@@ -135,14 +146,24 @@ export class GitHubClient {
   }
 
   async addLabel(owner: string, repo: string, prNumber: number, labels: string[]): Promise<void> {
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/labels`;
-    await axios.post(url, labels, { headers: await this.headers() });
+    try {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/labels`;
+      await axios.post(url, { labels }, { headers: await this.headers() });
+    } catch (error: any) {
+      logger.error('Failed to add labels', { owner, repo, prNumber, labels, message: error.message });
+      throw error;
+    }
   }
 
   async createIssue(owner: string, repo: string, title: string, body: string): Promise<any> {
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/issues`;
-    const res = await axios.post(url, { title, body }, { headers: await this.headers() });
-    return res.data;
+    try {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/issues`;
+      const res = await axios.post(url, { title, body }, { headers: await this.headers() });
+      return res.data;
+    } catch (error: any) {
+      logger.error('Failed to create issue', { owner, repo, title, message: error.message });
+      throw error;
+    }
   }
 
   async createCheckRun(
@@ -153,12 +174,17 @@ export class GitHubClient {
     conclusion: 'success' | 'failure' | 'neutral',
     output: { title: string; summary: string },
   ): Promise<any> {
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/check-runs`;
-    const res = await axios.post(
-      url,
-      { name, head_sha: headSha, status: 'completed', conclusion, output },
-      { headers: await this.headers() },
-    );
-    return res.data;
+    try {
+      const url = `${this.baseUrl}/repos/${owner}/${repo}/check-runs`;
+      const res = await axios.post(
+        url,
+        { name, head_sha: headSha, status: 'completed', conclusion, output },
+        { headers: await this.headers() },
+      );
+      return res.data;
+    } catch (error: any) {
+      logger.error('Failed to create check run', { owner, repo, name, message: error.message });
+      throw error;
+    }
   }
 }

@@ -1,5 +1,4 @@
 import { PipelineContext, ModuleResult, TestResult } from '../../types';
-import { AppUploader } from './app-uploader';
 import { TestExecutor } from './executor';
 import { getDevicesForPlatform, getMinimalDeviceSet } from './device-matrix';
 import { Logger } from '../../utils/logger';
@@ -13,7 +12,6 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
       return { moduleName: 'BrowserStack', status: 'warning', error: 'No scenarios to execute' };
     }
 
-    const uploader = new AppUploader();
     const executor = new TestExecutor();
 
     // Determine platform from code analysis

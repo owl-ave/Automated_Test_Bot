@@ -68,14 +68,19 @@ export class AppUploader {
   }
 
   async getRecentApps(): Promise<Array<{ app_url: string; custom_id: string; uploaded_at: string }>> {
-    const response = await axios.get(`${this.config.appAutomateUrl}/recent_apps`, {
-      auth: {
-        username: this.config.username,
-        password: this.config.accessKey,
-      },
-      timeout: this.config.timeout,
-    });
-    return response.data;
+    try {
+      const response = await axios.get(`${this.config.appAutomateUrl}/recent_apps`, {
+        auth: {
+          username: this.config.username,
+          password: this.config.accessKey,
+        },
+        timeout: this.config.timeout,
+      });
+      return response.data;
+    } catch (error) {
+      logger.error('Failed to fetch recent apps from BrowserStack', error);
+      return [];
+    }
   }
 
   async deleteApp(appId: string): Promise<void> {

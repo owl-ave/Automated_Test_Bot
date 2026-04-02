@@ -38,12 +38,14 @@ export class AndroidBuilder {
   private buildReactNative(): string {
     try {
       this.logger.log('Building React Native APK');
-      execSync('npx react-native run-android --variant=release', {
-        cwd: this.rootPath,
+      const androidDir = path.join(this.rootPath, 'android');
+      const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+
+      execSync(`${gradlew} assembleRelease`, {
+        cwd: androidDir,
         stdio: 'inherit',
       });
 
-      // Find the generated APK
       const apkPath = this.findApk();
       if (!apkPath) throw new Error('APK not found after build');
 

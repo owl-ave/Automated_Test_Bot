@@ -1,4 +1,4 @@
-import { GitHubAppEnv, ghHeaders } from './_github-app';
+import { GitHubAppEnv, getTokenForRepo, ghHeaders } from './_github-app';
 
 async function verifySignature(payload: string, signature: string, secret: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -27,11 +27,13 @@ export const onRequestPost: PagesFunction<GitHubAppEnv> = async (context) => {
 
   const pr = payload.pull_request;
   const repo = payload.repository;
-  const botRepo = context.env.BOT_REPO || repo.full_name;
-  const token = context.env.GITHUB_PAT;
-  if (!token) return Response.json({ error: 'GITHUB_PAT not configured' }, { status: 500 });
+  const botRepo = context.env.BOT_REPO;
+  if (!botRepo) return Response.json({ error: 'BOT_REPO not configured' }, { status: 500 });
 
   try {
+    const [botOwner, botRepoName] = botRepo.split('/');
+    const token = await getTokenForRepo(context.env, botOwner, botRepoName);
+
     await fetch(`https://api.github.com/repos/${botRepo}/actions/workflows/test-bot.yml/dispatches`, {
       method: 'POST',
       headers: { ...ghHeaders(token), 'Content-Type': 'application/json' },

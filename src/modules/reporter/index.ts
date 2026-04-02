@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { PipelineContext, ModuleResult } from '../../types';
 import { GitHubClient } from '../../utils/github';
 import { Logger } from '../../utils/logger';
@@ -17,6 +19,13 @@ export async function runReporter(context: PipelineContext): Promise<ModuleResul
     // Post PR comment (critical)
     const commenter = new PrCommenter(github);
     const report = commenter.generateReport(context);
+
+    // Write summary to test-results/summary.md for GitHub Action artifact
+    const resultsDir = path.resolve('test-results');
+    if (!fs.existsSync(resultsDir)) fs.mkdirSync(resultsDir, { recursive: true });
+    fs.writeFileSync(path.join(resultsDir, 'summary.md'), report, 'utf-8');
+    logger.log('Test results summary written to test-results/summary.md');
+
     await commenter.postReport(context.repoOwner, context.repoName, context.prNumber, report);
 
     // Update labels (non-fatal)

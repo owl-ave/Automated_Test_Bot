@@ -102,7 +102,7 @@ export async function runAiValidator(context: PipelineContext): Promise<ModuleRe
 
         // Generate bug report for real failures
         summary.failed++;
-        const sessionLogs = await executor.getSessionLogs(result.device).catch(() => '');
+        const sessionLogs = await executor.getSessionLogs(result.sessionId || result.device).catch(() => '');
         const bugReport = await bugReproducer.reproduce(result, sessionLogs);
         summary.bugReports.push(bugReport);
       }

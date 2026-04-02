@@ -90,7 +90,7 @@ export class BrowserStackUploader {
     }
   }
 
-  async getAppDetails(customId: string): Promise<any> {
+  async getAppDetails(customId: string): Promise<{ app_url: string; custom_id: string; name: string; version: string; uploaded_at: string }> {
     try {
       const response = await axios.get(`${this.baseUrl}/app`, {
         params: { custom_id: customId },

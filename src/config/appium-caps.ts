@@ -1,3 +1,5 @@
+import { Device } from './devices';
+
 export interface AppiumCapabilities {
   platformName: 'Android' | 'iOS';
   'appium:automationName': 'UiAutomator2' | 'XCUITest';
@@ -76,8 +78,6 @@ export function getIosCapabilities(
     },
   };
 }
-
-import { Device } from './devices';
 
 export function getAppiumCapabilities(device: Device, appUrl: string): AppiumCapabilities {
   const buildName = `PR-${Date.now()}`;
