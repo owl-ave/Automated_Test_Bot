@@ -9,6 +9,7 @@
     "jose": "^5.9.6"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260402.1"
+    "@cloudflare/workers-types": "^4.20260402.1",
+    "typescript": "^5.8.3"
   }
 }
