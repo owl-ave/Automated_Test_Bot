@@ -30,15 +30,23 @@ jobs:
         with:
           path: bot
 
-      # ── 2. Generate token for target repo ──
+      # ── 2. Parse target repo input ──
+      - name: Parse repo input
+        id: parse-repo
+        run: |
+          IFS='/' read -r owner repo <<< "${{ github.event.inputs.repo }}"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      # ── 3. Generate token for target repo ──
       - name: Generate GitHub App Token
         id: generate-token
         uses: actions/create-github-app-token@v1
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.event.inputs.repo && contains(github.event.inputs.repo, '/') && '' || '' }}
-          repositories: ${{ github.event.inputs.repo }}
+          owner: ${{ steps.parse-repo.outputs.owner }}
+          repositories: ${{ steps.parse-repo.outputs.repo }}
 
       # ── 3. Checkout target repo ──
       - name: Checkout target repo
