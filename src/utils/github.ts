@@ -1,5 +1,6 @@
 import axios from 'axios';
-import * as jwt from 'jsonwebtoken';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const jwt = require('jsonwebtoken');
 import { Logger } from './logger';
 
 const logger = new Logger('GitHubClient');
