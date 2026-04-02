@@ -107,7 +107,7 @@ jobs:
           TARGET_REPO: ${{ github.event.inputs.repo }}
           TARGET_BRANCH: ${{ github.event.inputs.branch }}
           TARGET_PATH: ${{ github.workspace }}/target
-          CLAUDE_AUTH_TOKEN: ${{ secrets.CLAUDE_AUTH_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_AUTH_TOKEN }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
           BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
           PERCY_TOKEN: ${{ secrets.PERCY_TOKEN }}

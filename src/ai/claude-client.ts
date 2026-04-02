@@ -18,7 +18,7 @@ async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
       }
     }
   } catch (error: any) {
-    logger.error('Claude Agent SDK query failed', { message: error.message });
+    logger.error('Claude Agent SDK query failed', { message: error.message || String(error), code: error.code });
     // Retry once
     try {
       logger.log('Retrying Claude query...');
@@ -31,7 +31,7 @@ async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
         }
       }
     } catch (retryError: any) {
-      logger.error('Claude query retry also failed', { message: retryError.message });
+      logger.error('Claude query retry also failed', { message: retryError.message || String(retryError), code: retryError.code });
       throw retryError;
     }
   }
