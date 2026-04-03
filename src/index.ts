@@ -169,9 +169,14 @@ async function main(): Promise<void> {
     const { runTestWriter } = await import('./modules/test-writer');
     await executeStep(context, 'TestWriter', () => runTestWriter(context), true);
 
-    // 5. BrowserStack Execution (Critical, highly flaky -> use Retry)
+    // 5. BrowserStack Execution (skip if no app build, retry if flaky)
     const { runBrowserStack } = await import('./modules/browserstack');
-    await executeStep(context, 'BrowserStack', () => runBrowserStack(context), true, true);
+    if (context.appBuild?.androidAppUrl || context.appBuild?.iosAppUrl) {
+      await executeStep(context, 'BrowserStack', () => runBrowserStack(context), true, true);
+    } else {
+      logger.warn('Skipping BrowserStack — no app build available');
+      context.logs.push('BrowserStack: skipped (no app URLs)');
+    }
 
     // 6. AI Validator (Non-critical, uses Retry)
     const { runAiValidator } = await import('./modules/ai-validator');

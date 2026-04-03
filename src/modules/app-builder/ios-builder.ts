@@ -38,12 +38,21 @@ export class IosBuilder {
   private buildReactNative(): string {
     try {
       this.logger.log('Building React Native IPA');
+
+      // Install JS dependencies — detect yarn vs npm
+      if (!fs.existsSync(path.join(this.rootPath, 'node_modules'))) {
+        const useYarn = fs.existsSync(path.join(this.rootPath, 'yarn.lock'));
+        const installCmd = useYarn ? 'yarn install --frozen-lockfile' : 'npm install';
+        this.logger.log('Installing React Native dependencies', { packageManager: useYarn ? 'yarn' : 'npm' });
+        execSync(installCmd, { cwd: this.rootPath, stdio: 'inherit', timeout: 300000 });
+      }
+
       const iosDir = path.join(this.rootPath, 'ios');
 
       // Install pods if not already installed
       if (!fs.existsSync(path.join(iosDir, 'Pods'))) {
         this.logger.log('Installing CocoaPods dependencies');
-        execSync('pod install', { cwd: iosDir, stdio: 'inherit' });
+        execSync('bundle exec pod install || pod install', { cwd: iosDir, stdio: 'inherit', shell: '/bin/bash' as any });
       }
 
       // Dynamically detect workspace and scheme

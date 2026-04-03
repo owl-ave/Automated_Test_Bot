@@ -39,10 +39,12 @@ export class AndroidBuilder {
     try {
       this.logger.log('Building React Native APK');
 
-      // Install JS dependencies first
+      // Install JS dependencies — detect yarn vs npm
       if (!fs.existsSync(path.join(this.rootPath, 'node_modules'))) {
-        this.logger.log('Installing React Native dependencies');
-        execSync('npm install --legacy-peer-deps', { cwd: this.rootPath, stdio: 'inherit' });
+        const useYarn = fs.existsSync(path.join(this.rootPath, 'yarn.lock'));
+        const installCmd = useYarn ? 'yarn install --frozen-lockfile' : 'npm install';
+        this.logger.log('Installing React Native dependencies', { packageManager: useYarn ? 'yarn' : 'npm' });
+        execSync(installCmd, { cwd: this.rootPath, stdio: 'inherit', timeout: 300000 });
       }
 
       const androidDir = path.join(this.rootPath, 'android');
@@ -56,6 +58,12 @@ export class AndroidBuilder {
       execSync(`${gradlew} assembleRelease`, {
         cwd: androidDir,
         stdio: 'inherit',
+        env: {
+          ...process.env,
+          // RN Gradle plugin needs to find react-native config from project root
+          RCT_NEW_ARCH_ENABLED: '1',
+        },
+        timeout: 600000, // 10 min max
       });
 
       const apkPath = this.findApk();
