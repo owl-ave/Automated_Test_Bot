@@ -55,9 +55,7 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
       return { moduleName: 'AppBuilder', status: 'success', data: buildResult };
     }
 
-    // --- Option 2: Build locally (CI with Android SDK / Xcode) ---
-
-    // Use mobilePath detected by CodeReader (searches subdirs like mobile/, app/, etc.)
+    // --- Option 2: Build from source ---
     const buildPath = context.mobilePath || context.targetPath;
 
     if (!buildPath || buildPath === context.targetPath) {
