@@ -30,6 +30,7 @@
   <div class="flex border-b border-gray-800 px-6 pt-4 gap-6 text-sm">
     <button class="tab pb-3 tab-active" data-tab="trigger" onclick="switchTab('trigger')">Trigger Test</button>
     <button class="tab pb-3 text-gray-500 hover:text-gray-300" data-tab="runs" onclick="switchTab('runs')">Runs & Logs</button>
+    <button class="tab pb-3 text-gray-500 hover:text-gray-300" data-tab="branches" onclick="switchTab('branches')">Branch Analysis</button>
   </div>
 
   <main class="px-6 py-6 max-w-7xl mx-auto">
@@ -104,6 +105,129 @@
       </div>
     </div>
 
+    <!-- Branch Analysis Tab -->
+    <div id="tab-branches" class="hidden">
+      <!-- Branch Selector -->
+      <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 mb-6">
+        <h2 class="text-lg font-semibold mb-4">Branch Analysis</h2>
+        <div class="flex gap-4 items-end flex-wrap">
+          <div class="flex-1 min-w-[200px]">
+            <label class="block text-sm text-gray-400 mb-1">Repository</label>
+            <div class="text-sm text-gray-300" id="branch-repo-label">
+              <span class="text-gray-500">Uses repo from Trigger tab</span>
+            </div>
+          </div>
+          <div class="flex-1 min-w-[200px]">
+            <label class="block text-sm text-gray-400 mb-1">Branch</label>
+            <div class="flex gap-2">
+              <select id="branch-select" class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" onchange="onBranchSelect()">
+                <option value="">Select a branch...</option>
+              </select>
+              <button onclick="loadBranches()" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm hover:bg-gray-700">Refresh</button>
+            </div>
+          </div>
+          <div class="min-w-[200px]">
+            <label class="block text-sm text-gray-400 mb-1">Compare with</label>
+            <select id="compare-branch-select" class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm focus:border-blue-500 focus:outline-none" onchange="onBranchSelect()">
+              <option value="main">main</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div id="branch-empty" class="text-center py-16 text-gray-500">
+        <p class="text-lg mb-2">Select a branch to view analysis</p>
+        <p class="text-sm">Choose a repository and branch from above to get started</p>
+      </div>
+
+      <!-- Branch Content (hidden until branch selected) -->
+      <div id="branch-content" class="hidden">
+        <!-- Summary Cards -->
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Total Runs</p>
+            <p class="text-2xl font-bold mt-1" id="bs-total">0</p>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Pass Rate</p>
+            <p class="text-2xl font-bold mt-1" id="bs-passrate">0%</p>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Health Score</p>
+            <p class="text-2xl font-bold mt-1" id="bs-health">0</p>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800">
+            <p class="text-xs text-gray-500 uppercase tracking-wide">Avg Duration</p>
+            <p class="text-2xl font-bold mt-1" id="bs-duration">—</p>
+          </div>
+        </div>
+
+        <!-- Pass/Fail Breakdown -->
+        <div class="grid lg:grid-cols-3 gap-4 mb-6">
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800 flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-green-900/40 flex items-center justify-center text-green-400 font-bold" id="bs-passed">0</div>
+            <div><p class="text-xs text-gray-500">Passed</p></div>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800 flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-red-900/40 flex items-center justify-center text-red-400 font-bold" id="bs-failed">0</div>
+            <div><p class="text-xs text-gray-500">Failed</p></div>
+          </div>
+          <div class="bg-gray-900 rounded-xl p-5 border border-gray-800 flex items-center gap-4">
+            <div class="w-10 h-10 rounded-lg bg-blue-900/40 flex items-center justify-center text-blue-400 font-bold" id="bs-running">0</div>
+            <div><p class="text-xs text-gray-500">In Progress</p></div>
+          </div>
+        </div>
+
+        <!-- Trend Chart -->
+        <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 mb-6">
+          <h3 class="text-sm font-semibold mb-4 text-gray-300">Pass / Fail Trend (Last 30 Days)</h3>
+          <div id="trend-chart" class="flex items-end gap-1 h-40 overflow-x-auto">
+            <p class="text-gray-600 text-sm">No trend data</p>
+          </div>
+          <div id="trend-labels" class="flex gap-1 mt-2 text-xs text-gray-600 overflow-x-auto"></div>
+        </div>
+
+        <!-- Comparison Panel -->
+        <div id="comparison-panel" class="bg-gray-900 rounded-xl p-6 border border-gray-800 mb-6 hidden">
+          <h3 class="text-sm font-semibold mb-4 text-gray-300">Branch Comparison</h3>
+          <div class="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <p class="text-xs text-gray-500 mb-2" id="cmp-branch-name">Branch</p>
+              <p class="text-lg font-bold" id="cmp-branch-rate">—</p>
+              <p class="text-xs text-gray-500">Pass Rate</p>
+              <p class="text-lg font-bold mt-2" id="cmp-branch-health">—</p>
+              <p class="text-xs text-gray-500">Health Score</p>
+            </div>
+            <div class="flex flex-col items-center justify-center">
+              <p class="text-sm text-gray-500">vs</p>
+              <p class="text-lg font-bold mt-2" id="cmp-delta-rate">—</p>
+              <p class="text-xs text-gray-500">Pass Rate Delta</p>
+              <p class="text-lg font-bold mt-2" id="cmp-delta-health">—</p>
+              <p class="text-xs text-gray-500">Health Delta</p>
+            </div>
+            <div>
+              <p class="text-xs text-gray-500 mb-2" id="cmp-base-name">main</p>
+              <p class="text-lg font-bold" id="cmp-base-rate">—</p>
+              <p class="text-xs text-gray-500">Pass Rate</p>
+              <p class="text-lg font-bold mt-2" id="cmp-base-health">—</p>
+              <p class="text-xs text-gray-500">Health Score</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Runs -->
+        <div class="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden mb-6">
+          <div class="p-4 border-b border-gray-800">
+            <h3 class="font-semibold text-sm text-gray-300">Recent Runs on this Branch</h3>
+          </div>
+          <div id="branch-runs-list" class="divide-y divide-gray-800 max-h-[400px] overflow-y-auto">
+            <div class="p-8 text-center text-gray-500">No runs</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Runs Tab -->
     <div id="tab-runs" class="hidden">
       <div class="grid lg:grid-cols-3 gap-6">
@@ -142,6 +266,7 @@ function switchTab(tab){
   document.querySelector(`[data-tab="${tab}"]`).classList.add('tab-active');
   document.querySelector(`[data-tab="${tab}"]`).classList.remove('text-gray-500');
   if(tab==='runs')loadRuns();
+  if(tab==='branches')loadBranches();
 }
 
 function toggleMode(){
@@ -289,6 +414,170 @@ async function viewRunLogs(runId, repo){
     container.innerHTML=data.logs.map(l=>`<div class="log-line${l.includes('[ERR]')?' log-err':''}">${l}</div>`).join('');
     container.scrollTop=container.scrollHeight;
   }catch{container.innerHTML='<p class="text-red-400">Failed to load logs</p>';}
+}
+
+// ─── Branch Analysis ────────────────────────────────────────────────────────
+
+let branchesCache = [];
+
+async function loadBranches() {
+  const owner = document.getElementById('repo-owner').value.trim();
+  const name = document.getElementById('repo-name').value.trim();
+  const repo = owner && name ? `${owner}/${name}` : '';
+
+  document.getElementById('branch-repo-label').innerHTML = repo
+    ? `<span class="text-gray-200 font-medium">${repo}</span>`
+    : '<span class="text-gray-500">Select a repo from the Trigger tab first</span>';
+
+  const sel = document.getElementById('branch-select');
+  const cmpSel = document.getElementById('compare-branch-select');
+
+  try {
+    const data = await api(`/branches${repo ? '?repo=' + encodeURIComponent(repo) : ''}`);
+    branchesCache = data.branches || [];
+
+    sel.innerHTML = '<option value="">Select a branch...</option>';
+    cmpSel.innerHTML = '<option value="main">main</option>';
+
+    branchesCache.forEach(b => {
+      const healthColor = b.healthScore >= 75 ? 'text-green-400' : b.healthScore >= 50 ? 'text-yellow-400' : 'text-red-400';
+      sel.innerHTML += `<option value="${b.name}">${b.name} (${b.totalRuns} runs, ${b.passRate}% pass)</option>`;
+      cmpSel.innerHTML += `<option value="${b.name}">${b.name}</option>`;
+    });
+  } catch {
+    sel.innerHTML = '<option value="">Failed to load branches</option>';
+  }
+}
+
+async function onBranchSelect() {
+  const branch = document.getElementById('branch-select').value;
+  if (!branch) {
+    document.getElementById('branch-empty').classList.remove('hidden');
+    document.getElementById('branch-content').classList.add('hidden');
+    return;
+  }
+
+  const owner = document.getElementById('repo-owner').value.trim();
+  const name = document.getElementById('repo-name').value.trim();
+  const repo = owner && name ? `${owner}/${name}` : '';
+  const compare = document.getElementById('compare-branch-select').value;
+
+  try {
+    let url = `/branches?branch=${encodeURIComponent(branch)}`;
+    if (repo) url += `&repo=${encodeURIComponent(repo)}`;
+    if (compare && compare !== branch) url += `&compare=${encodeURIComponent(compare)}`;
+
+    const data = await api(url);
+
+    document.getElementById('branch-empty').classList.add('hidden');
+    document.getElementById('branch-content').classList.remove('hidden');
+
+    // Summary cards
+    const s = data.summary;
+    document.getElementById('bs-total').textContent = s.totalRuns;
+    document.getElementById('bs-passrate').textContent = s.passRate + '%';
+    document.getElementById('bs-passrate').className = `text-2xl font-bold mt-1 ${s.passRate >= 80 ? 'text-green-400' : s.passRate >= 50 ? 'text-yellow-400' : 'text-red-400'}`;
+    document.getElementById('bs-health').textContent = s.healthScore;
+    document.getElementById('bs-health').className = `text-2xl font-bold mt-1 ${s.healthScore >= 75 ? 'text-green-400' : s.healthScore >= 50 ? 'text-yellow-400' : 'text-red-400'}`;
+    document.getElementById('bs-duration').textContent = s.avgDuration > 0 ? formatDuration(s.avgDuration) : '—';
+    document.getElementById('bs-passed').textContent = s.passed;
+    document.getElementById('bs-failed').textContent = s.failed;
+    document.getElementById('bs-running').textContent = s.inProgress;
+
+    // Trend chart
+    renderBranchTrends(data.trends || []);
+
+    // Comparison
+    if (data.comparison) {
+      document.getElementById('comparison-panel').classList.remove('hidden');
+      document.getElementById('cmp-branch-name').textContent = branch;
+      document.getElementById('cmp-branch-rate').textContent = s.passRate + '%';
+      document.getElementById('cmp-branch-health').textContent = s.healthScore;
+
+      const base = data.comparison.base;
+      document.getElementById('cmp-base-name').textContent = base.name;
+      document.getElementById('cmp-base-rate').textContent = base.passRate + '%';
+      document.getElementById('cmp-base-health').textContent = base.healthScore;
+
+      const delta = data.comparison.delta;
+      const drEl = document.getElementById('cmp-delta-rate');
+      drEl.textContent = (delta.passRate >= 0 ? '+' : '') + delta.passRate + '%';
+      drEl.className = `text-lg font-bold mt-2 ${delta.passRate >= 0 ? 'text-green-400' : 'text-red-400'}`;
+
+      const dhEl = document.getElementById('cmp-delta-health');
+      dhEl.textContent = (delta.healthScore >= 0 ? '+' : '') + delta.healthScore;
+      dhEl.className = `text-lg font-bold mt-2 ${delta.healthScore >= 0 ? 'text-green-400' : 'text-red-400'}`;
+    } else {
+      document.getElementById('comparison-panel').classList.add('hidden');
+    }
+
+    // Recent runs
+    renderBranchRuns(data.recentRuns || []);
+  } catch (e) {
+    console.error('Branch analysis error:', e);
+  }
+}
+
+function renderBranchTrends(trends) {
+  const chart = document.getElementById('trend-chart');
+  const labels = document.getElementById('trend-labels');
+
+  if (!trends || trends.length === 0) {
+    chart.innerHTML = '<p class="text-gray-600 text-sm">No trend data available</p>';
+    labels.innerHTML = '';
+    return;
+  }
+
+  const maxTotal = Math.max(...trends.map(t => t.total), 1);
+  const barWidth = Math.max(20, Math.floor(100 / trends.length));
+
+  chart.innerHTML = trends.map(t => {
+    const passH = Math.round((t.passed / maxTotal) * 140);
+    const failH = Math.round((t.failed / maxTotal) * 140);
+    return `<div class="flex flex-col items-center gap-0" style="min-width:${barWidth}px">
+      <div class="flex flex-col-reverse w-full gap-0.5">
+        ${t.passed > 0 ? `<div class="bg-green-500/70 rounded-t" style="height:${Math.max(passH, 4)}px" title="${t.passed} passed"></div>` : ''}
+        ${t.failed > 0 ? `<div class="bg-red-500/70 rounded-t" style="height:${Math.max(failH, 4)}px" title="${t.failed} failed"></div>` : ''}
+      </div>
+    </div>`;
+  }).join('');
+
+  labels.innerHTML = trends.map(t =>
+    `<div style="min-width:${barWidth}px" class="text-center truncate">${t.date.slice(5)}</div>`
+  ).join('');
+}
+
+function renderBranchRuns(runs) {
+  const container = document.getElementById('branch-runs-list');
+  if (!runs || runs.length === 0) {
+    container.innerHTML = '<div class="p-8 text-center text-gray-500">No runs found for this branch</div>';
+    return;
+  }
+
+  container.innerHTML = runs.map(r => {
+    let sc = 'text-gray-400', sb = 'bg-gray-800', st = r.status;
+    if (r.status === 'completed' && r.conclusion === 'success') { sc = 'text-green-400'; sb = 'bg-green-900/30'; st = 'PASSED'; }
+    else if (r.status === 'completed' && r.conclusion === 'failure') { sc = 'text-red-400'; sb = 'bg-red-900/30'; st = 'FAILED'; }
+    else if (r.status === 'in_progress') { sc = 'text-blue-400'; sb = 'bg-blue-900/30'; st = 'RUNNING'; }
+
+    return `<div class="px-4 py-3 hover:bg-gray-800/50 flex justify-between items-center">
+      <div>
+        <span class="font-medium text-sm">${r.repo}</span>
+        ${r.prNumber ? '<span class="text-gray-500 text-xs ml-1">#' + r.prNumber + '</span>' : ''}
+        <div class="text-xs text-gray-600">${new Date(r.startedAt).toLocaleString()} ${r.triggeredBy ? '— by ' + r.triggeredBy : ''}</div>
+      </div>
+      <span class="px-2 py-0.5 rounded text-xs font-medium ${sc} ${sb}">${st}</span>
+    </div>`;
+  }).join('');
+}
+
+function formatDuration(ms) {
+  if (ms < 1000) return ms + 'ms';
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const rem = s % 60;
+  return m + 'm ' + rem + 's';
 }
 
 loadRepos();

@@ -23,9 +23,16 @@ export const testRunsTable = pgTable(
     locatorStrategy: text('locator_strategy'),
     selfHealed: boolean('self_healed').default(false),
     timestamp: timestamp('timestamp', { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+    branch: text('branch').notNull().default('main'),
+    repoFullName: text('repo_full_name').notNull().default(''),
+    commitSha: text('commit_sha'),
   },
   (table) => {
-    return [index('idx_test_runs_scenario').on(table.scenario), index('idx_test_runs_timestamp').on(table.timestamp)];
+    return [
+      index('idx_test_runs_scenario').on(table.scenario),
+      index('idx_test_runs_timestamp').on(table.timestamp),
+      index('idx_test_runs_branch').on(table.repoFullName, table.branch),
+    ];
   },
 );
 

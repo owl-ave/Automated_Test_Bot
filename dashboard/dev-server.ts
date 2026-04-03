@@ -134,6 +134,147 @@ app.post('/api/trigger', (req, res) => {
   });
 });
 
+// --- Branch Analysis ---
+
+function computeHealthScore(branchRuns: Run[]): number {
+  if (branchRuns.length === 0) return 0;
+  const completed = branchRuns.filter(r => r.status === 'completed');
+  const passed = completed.filter(r => r.conclusion === 'success').length;
+  const total = completed.length || 1;
+  const passRate = (passed / total) * 100;
+
+  const lastRun = branchRuns[0];
+  const hoursSinceLast = (Date.now() - new Date(lastRun.startedAt).getTime()) / 3600000;
+  let recencyBonus = 25;
+  if (hoursSinceLast < 24) recencyBonus = 100;
+  else if (hoursSinceLast < 168) recencyBonus = 75;
+  else if (hoursSinceLast < 720) recencyBonus = 50;
+
+  const dailyMap: Record<string, { passed: number; total: number }> = {};
+  completed.forEach(r => {
+    const day = r.startedAt.slice(0, 10);
+    if (!dailyMap[day]) dailyMap[day] = { passed: 0, total: 0 };
+    dailyMap[day].total++;
+    if (r.conclusion === 'success') dailyMap[day].passed++;
+  });
+  const dailyRates = Object.values(dailyMap).map(d => (d.passed / d.total) * 100);
+  let stabilityBonus = 100;
+  if (dailyRates.length > 1) {
+    const mean = dailyRates.reduce((a, b) => a + b, 0) / dailyRates.length;
+    const variance = dailyRates.reduce((s, r) => s + (r - mean) ** 2, 0) / dailyRates.length;
+    stabilityBonus = Math.max(0, Math.min(100, 100 - Math.sqrt(variance) * 2));
+  }
+
+  return Math.round(passRate * 0.5 + recencyBonus * 0.2 + stabilityBonus * 0.2 + 10);
+}
+
+// GET /api/branches — list branches with summaries, or detail for a specific branch
+app.get('/api/branches', (_req, res) => {
+  const repo = _req.query.repo as string | undefined;
+  const branch = _req.query.branch as string | undefined;
+  const compare = _req.query.compare as string | undefined;
+
+  const allRuns = Array.from(runs.values())
+    .filter(r => !repo || r.repo === repo)
+    .sort((a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime());
+
+  // Group by branch
+  const branchMap: Record<string, Run[]> = {};
+  allRuns.forEach(r => {
+    const b = r.branch || 'main';
+    if (!branchMap[b]) branchMap[b] = [];
+    branchMap[b].push(r);
+  });
+
+  // Specific branch detail
+  if (branch) {
+    const branchRuns = branchMap[branch] || [];
+    if (branchRuns.length === 0) {
+      return res.json({
+        branch, repo: repo || '',
+        summary: { totalRuns: 0, passed: 0, failed: 0, inProgress: 0, passRate: 0, avgDuration: 0, healthScore: 0 },
+        trends: [], recentRuns: [],
+      });
+    }
+
+    const completed = branchRuns.filter(r => r.status === 'completed');
+    const passed = completed.filter(r => r.conclusion === 'success').length;
+    const failed = completed.filter(r => r.conclusion === 'failure').length;
+    const inProgress = branchRuns.filter(r => r.status === 'in_progress').length;
+
+    // Daily trends
+    const trendMap: Record<string, { passed: number; failed: number; total: number }> = {};
+    completed.forEach(r => {
+      const day = r.startedAt.slice(0, 10);
+      if (!trendMap[day]) trendMap[day] = { passed: 0, failed: 0, total: 0 };
+      trendMap[day].total++;
+      if (r.conclusion === 'success') trendMap[day].passed++;
+      else trendMap[day].failed++;
+    });
+    const trends = Object.entries(trendMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, d]) => ({ date, ...d }));
+
+    const recentRuns = branchRuns.slice(0, 20).map(r => ({
+      id: r.id, status: r.status, conclusion: r.conclusion, branch: r.branch,
+      event: r.event, prNumber: r.prNumber, triggeredBy: r.triggeredBy,
+      startedAt: r.startedAt, completedAt: r.completedAt, url: r.url, repo: r.repo,
+    }));
+
+    const detail: any = {
+      branch, repo: repo || branchRuns[0]?.repo || '',
+      summary: {
+        totalRuns: branchRuns.length, passed, failed, inProgress,
+        passRate: completed.length > 0 ? Math.round((passed / completed.length) * 1000) / 10 : 0,
+        avgDuration: 0,
+        healthScore: computeHealthScore(branchRuns),
+      },
+      trends, recentRuns,
+    };
+
+    // Comparison
+    if (compare && branchMap[compare]) {
+      const baseRuns = branchMap[compare];
+      const baseCompleted = baseRuns.filter(r => r.status === 'completed');
+      const basePassed = baseCompleted.filter(r => r.conclusion === 'success').length;
+      const basePassRate = baseCompleted.length > 0 ? Math.round((basePassed / baseCompleted.length) * 1000) / 10 : 0;
+
+      detail.comparison = {
+        base: {
+          name: compare, totalRuns: baseRuns.length, passRate: basePassRate,
+          healthScore: computeHealthScore(baseRuns),
+        },
+        delta: {
+          passRate: Math.round((detail.summary.passRate - basePassRate) * 10) / 10,
+          healthScore: detail.summary.healthScore - computeHealthScore(baseRuns),
+        },
+      };
+    }
+
+    return res.json(detail);
+  }
+
+  // Return branch list
+  const branches = Object.entries(branchMap)
+    .map(([name, brRuns]) => {
+      const completed = brRuns.filter(r => r.status === 'completed');
+      const passed = completed.filter(r => r.conclusion === 'success').length;
+      const failed = completed.filter(r => r.conclusion === 'failure').length;
+      const inProgress = brRuns.filter(r => r.status === 'in_progress').length;
+      return {
+        name, repo: repo || brRuns[0]?.repo || '', totalRuns: brRuns.length,
+        passed, failed, inProgress,
+        passRate: completed.length > 0 ? Math.round((passed / completed.length) * 1000) / 10 : 0,
+        lastRun: brRuns[0]?.startedAt || null,
+        lastStatus: brRuns[0]?.conclusion || brRuns[0]?.status || 'unknown',
+        healthScore: computeHealthScore(brRuns),
+      };
+    })
+    .sort((a, b) => (b.lastRun || '').localeCompare(a.lastRun || ''));
+
+  res.json({ branches });
+});
+
 // GET /api/runs — returns local runs
 app.get('/api/runs', (_req, res) => {
   const allRuns = Array.from(runs.values())
