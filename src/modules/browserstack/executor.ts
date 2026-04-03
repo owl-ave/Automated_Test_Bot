@@ -61,6 +61,19 @@ export class TestExecutor {
         }
       } finally {
         if (session) {
+          // Fetch video URL before closing session
+          try {
+            const videoUrl = await this.getSessionVideoUrl(session.sessionId);
+            if (videoUrl) {
+              for (const result of results) {
+                if (result.sessionId === session.sessionId) {
+                  result.videoUrl = videoUrl;
+                }
+              }
+            }
+          } catch {
+            logger.warn('Video URL fetch failed, continuing with session cleanup');
+          }
           await this.closeSession(session);
         }
       }
@@ -341,6 +354,26 @@ export class TestExecutor {
     } catch (error) {
       logger.error('Failed to fetch session logs', error);
       return '';
+    }
+  }
+
+  async getSessionVideoUrl(sessionId: string): Promise<string | undefined> {
+    try {
+      const response = await axios.get(`${this.config.appAutomateUrl}/sessions/${sessionId}.json`, {
+        auth: {
+          username: this.config.username,
+          password: this.config.accessKey,
+        },
+        timeout: this.config.timeout,
+      });
+      const videoUrl = response.data?.automation_session?.video_url;
+      if (videoUrl) {
+        logger.log('Video URL retrieved', { sessionId });
+      }
+      return videoUrl || undefined;
+    } catch (error) {
+      logger.error('Failed to fetch session video URL', error);
+      return undefined;
     }
   }
 

@@ -85,6 +85,7 @@ export interface TestResult {
   sessionId?: string;
   duration: number;
   screenshot?: string;
+  videoUrl?: string;
   error?: string;
 }
 

@@ -91,6 +91,9 @@ export class PrCommenter {
         if (t.screenshot) {
           lines.push(`- **Screenshot**: ![failure](${t.screenshot})`);
         }
+        if (t.videoUrl) {
+          lines.push(`- **Video**: [Watch Test Recording](${t.videoUrl})`);
+        }
         return lines.join('\n');
       })
       .join('\n\n---\n\n');
@@ -98,19 +101,27 @@ export class PrCommenter {
 
   private buildWarningsSection(warned: TestResult[]): string {
     return warned
-      .map((t) => `- **${t.scenario}** on ${t.device}: ${t.error || 'Non-critical issue detected'}`)
+      .map((t) => {
+        const video = t.videoUrl ? ` | [Watch Video](${t.videoUrl})` : '';
+        return `- **${t.scenario}** on ${t.device}: ${t.error || 'Non-critical issue detected'}${video}`;
+      })
       .join('\n');
   }
 
   private buildPassingSection(passed: TestResult[]): string {
-    const rows = passed.map((t) => `| ${t.scenario} | ${t.device} | ${(t.duration / 1000).toFixed(1)}s |`).join('\n');
+    const rows = passed
+      .map((t) => {
+        const video = t.videoUrl ? `[Watch](${t.videoUrl})` : '-';
+        return `| ${t.scenario} | ${t.device} | ${(t.duration / 1000).toFixed(1)}s | ${video} |`;
+      })
+      .join('\n');
 
     return [
       '<details>',
       '<summary>View passing tests</summary>',
       '',
-      '| Scenario | Device | Duration |',
-      '|----------|--------|----------|',
+      '| Scenario | Device | Duration | Video |',
+      '|----------|--------|----------|-------|',
       rows,
       '',
       '</details>',
