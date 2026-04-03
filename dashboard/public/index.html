@@ -19,7 +19,7 @@
     <div class="flex items-center gap-3">
       <div class="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center font-bold text-sm">TB</div>
       <h1 class="text-xl font-semibold">Testing Bot Dashboard</h1>
-      <span class="text-xs bg-yellow-600/20 text-yellow-400 px-2 py-0.5 rounded">LOCAL MODE</span>
+      <span class="text-xs bg-green-600/20 text-green-400 px-2 py-0.5 rounded">LIVE</span>
     </div>
     <div class="flex items-center gap-2 text-sm text-gray-400">
       <span class="w-2 h-2 rounded-full bg-green-500" id="status-dot"></span>
@@ -38,7 +38,7 @@
     <div id="tab-trigger">
       <div class="grid lg:grid-cols-2 gap-6">
         <div class="bg-gray-900 rounded-xl p-6 border border-gray-800">
-          <h2 class="text-lg font-semibold mb-4">Trigger Bot (Local)</h2>
+          <h2 class="text-lg font-semibold mb-4">Trigger Bot</h2>
 
           <div class="mb-4">
             <label class="block text-sm text-gray-400 mb-1">Repository</label>
@@ -86,7 +86,7 @@
           </div>
 
           <button id="trigger-btn" onclick="triggerBot()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-lg transition-colors mt-2">
-            Run Tests Locally
+            Run Tests
           </button>
           <div id="trigger-result" class="mt-3 text-sm hidden"></div>
         </div>
@@ -212,10 +212,10 @@ async function triggerBot(){
       if(data.runId) startLogPolling(data.runId);
     }
     result.classList.remove('hidden');
-    btn.innerHTML='Run Tests Locally';btn.disabled=false;
+    btn.innerHTML='Run Tests';btn.disabled=false;
   }catch{
     result.className='mt-3 text-sm text-red-400';result.textContent='Failed';
-    result.classList.remove('hidden');btn.innerHTML='Run Tests Locally';btn.disabled=false;
+    result.classList.remove('hidden');btn.innerHTML='Run Tests';btn.disabled=false;
   }
 }
 
