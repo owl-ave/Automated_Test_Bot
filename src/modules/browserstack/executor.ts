@@ -212,8 +212,7 @@ export class TestExecutor {
             await session.driver.takeScreenshot();
             break;
           default:
-            logger.warn('Unrecognized step action, attempting element interaction', { text: step.text });
-            break;
+            throw new Error(`Unrecognized step: "${step.text}" — could not map to any Appium action (tap, type, swipe, scroll, assert, etc.)`);
         }
         return; // Success
       } catch (error) {

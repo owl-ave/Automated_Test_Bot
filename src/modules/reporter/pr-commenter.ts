@@ -1,4 +1,4 @@
-import { PipelineContext, TestResult } from '../../types';
+import { PipelineContext, TestResult, ModuleStatus } from '../../types';
 import { GitHubClient } from '../../utils/github';
 import { Logger } from '../../utils/logger';
 
@@ -20,8 +20,24 @@ export class PrCommenter {
     const passed = results.filter((r) => r.status === 'pass');
     const failed = results.filter((r) => r.status === 'fail');
     const warned = results.filter((r) => r.status === 'warn');
+    const moduleStatuses = context.moduleStatuses || [];
 
     const sections: ReportSection[] = [];
+
+    // Pipeline execution summary — always show what actually happened
+    sections.push({
+      title: 'Pipeline Execution',
+      content: this.buildPipelineSection(moduleStatuses, results.length > 0),
+    });
+
+    // If no real tests ran, show a clear warning instead of fake results
+    if (results.length === 0) {
+      sections.push({
+        title: 'Test Results',
+        content: '> **No tests were executed on real devices.** The pipeline completed code analysis only.\n>\n> Check the Pipeline Execution table above to see which modules failed or were skipped.',
+      });
+      return this.assembleReport(sections);
+    }
 
     sections.push({
       title: 'Summary',
@@ -58,6 +74,44 @@ export class PrCommenter {
     }
 
     return this.assembleReport(sections);
+  }
+
+  private buildPipelineSection(statuses: ModuleStatus[], hasTestResults: boolean): string {
+    if (statuses.length === 0) {
+      return '*No module execution data available.*';
+    }
+
+    const statusIcon = (s: ModuleStatus['status']) => {
+      switch (s) {
+        case 'success': return '✅';
+        case 'warning': return '⚠️';
+        case 'error': return '❌';
+        case 'skipped': return '⏭️';
+      }
+    };
+
+    const rows = statuses.map((m) => {
+      const duration = m.durationMs > 0 ? `${(m.durationMs / 1000).toFixed(1)}s` : '-';
+      const reason = m.error ? m.error : '';
+      return `| ${statusIcon(m.status)} | ${m.name} | ${m.status.toUpperCase()} | ${duration} | ${reason} |`;
+    }).join('\n');
+
+    const lines = [
+      '| | Module | Status | Duration | Details |',
+      '|---|--------|--------|----------|---------|',
+      rows,
+    ];
+
+    // Add a warning banner if critical modules failed/skipped
+    const skippedOrFailed = statuses.filter((m) => m.status === 'error' || m.status === 'skipped');
+    const browserStackSkipped = skippedOrFailed.some((m) => m.name === 'BrowserStack');
+
+    if (browserStackSkipped && !hasTestResults) {
+      lines.push('');
+      lines.push('> ⚠️ **BrowserStack was skipped** — no real device tests were executed. Results below (if any) are from code analysis only and do not reflect actual app behavior.');
+    }
+
+    return lines.join('\n');
   }
 
   private buildSummaryTable(pass: number, fail: number, warn: number, results: TestResult[]): string {

@@ -1,3 +1,10 @@
+export interface ModuleStatus {
+  name: string;
+  status: 'success' | 'error' | 'warning' | 'skipped';
+  durationMs: number;
+  error?: string;
+}
+
 export interface PipelineContext {
   prNumber: number;
   repoOwner: string;
@@ -11,6 +18,7 @@ export interface PipelineContext {
   testResults?: TestResult[];
   logs: string[];
   appBuild?: AppBuildResult;
+  moduleStatuses: ModuleStatus[];
 }
 
 export interface AppBuildResult {

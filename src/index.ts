@@ -52,14 +52,17 @@ async function executeStep(
   const startTime = Date.now();
 
   const result: ModuleResult = useRetry ? await runWithRetry(moduleName, executable) : await executable();
+  const durationMs = Date.now() - startTime;
 
-  context.logs.push(`${moduleName} [${Date.now() - startTime}ms]: ${result.status}`);
+  context.logs.push(`${moduleName} [${durationMs}ms]: ${result.status}`);
 
   if (result.status === 'success' || result.status === 'warning') {
+    context.moduleStatuses.push({ name: moduleName, status: result.status, durationMs, error: result.error });
     logger.log(`${moduleName} completed safely`, result.data || 'Success without data');
     return true;
   }
 
+  context.moduleStatuses.push({ name: moduleName, status: 'error', durationMs, error: result.error });
   logger.error(`${moduleName} failed`, result.error);
   if (isCritical) {
     logger.error(`CRITICAL FAILURE in ${moduleName}. Aborting pipeline to prevent invalid state.`);
@@ -112,6 +115,7 @@ async function main(): Promise<void> {
     targetPath,
     diffFiles: [],
     logs: [],
+    moduleStatuses: [],
   };
 
   // Validate required environment variables early
@@ -155,6 +159,7 @@ async function main(): Promise<void> {
       await executeStep(context, 'AppBuilder', () => runAppBuilder(context), false);
     } else {
       logger.log('LOCAL_MODE: Skipping AppBuilder (no build tools needed)');
+      context.moduleStatuses.push({ name: 'AppBuilder', status: 'skipped', durationMs: 0, error: 'LOCAL_MODE enabled — no build tools available' });
     }
 
     // 2. App Analyzer (Critical)
@@ -174,8 +179,10 @@ async function main(): Promise<void> {
     if (context.appBuild?.androidAppUrl || context.appBuild?.iosAppUrl) {
       await executeStep(context, 'BrowserStack', () => runBrowserStack(context), true, true);
     } else {
-      logger.warn('Skipping BrowserStack — no app build available');
+      const reason = 'No app build available — AppBuilder either failed or was skipped, so real device testing could not run';
+      logger.warn(`Skipping BrowserStack — ${reason}`);
       context.logs.push('BrowserStack: skipped (no app URLs)');
+      context.moduleStatuses.push({ name: 'BrowserStack', status: 'skipped', durationMs: 0, error: reason });
     }
 
     // 6. AI Validator (Non-critical, uses Retry)
