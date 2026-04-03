@@ -12,9 +12,8 @@ export function ghHeaders(token: string) {
 // Generate JWT using jose library (handles PKCS8 PEM natively)
 async function generateJWT(appId: string, privateKeyB64: string): Promise<string> {
   const { SignJWT, importPKCS8 } = await import('jose');
-  // Decode base64-encoded PEM — trim any whitespace/newlines from env var
-  const cleaned = privateKeyB64.trim().replace(/\s+/g, '');
-  const pem = atob(cleaned);
+  // Decode base64-encoded PEM — only trim surrounding whitespace
+  const pem = atob(privateKeyB64.trim());
   const key = await importPKCS8(pem, 'RS256');
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({ iss: appId })
