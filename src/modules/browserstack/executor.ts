@@ -115,7 +115,18 @@ export class TestExecutor {
       },
     );
 
-    const sessionId = response.data.value?.sessionId || response.data.sessionId;
+    // W3C: value.sessionId, legacy: sessionId, BrowserStack sometimes nests differently
+    const sessionId =
+      response.data.value?.sessionId ||
+      response.data.sessionId ||
+      response.data.value?.capabilities?.sessionId ||
+      '';
+
+    if (!sessionId) {
+      logger.error('BrowserStack returned empty sessionId', { responseKeys: Object.keys(response.data), valueKeys: Object.keys(response.data.value || {}) });
+      throw new Error(`BrowserStack session created but sessionId is empty. Response: ${JSON.stringify(response.data).slice(0, 500)}`);
+    }
+
     logger.log('Session created', { sessionId, device: device.name });
 
     return {
@@ -211,6 +222,9 @@ export class TestExecutor {
           case 'screenshot':
             await session.driver.takeScreenshot();
             break;
+          case 'noop':
+            // Intentional no-op (e.g., "the app is launched" — already handled by session creation)
+            break;
           default:
             throw new Error(`Unrecognized step: "${step.text}" — could not map to any Appium action (tap, type, swipe, scroll, assert, etc.)`);
         }
@@ -237,6 +251,15 @@ export class TestExecutor {
     duration?: number;
   } {
     const lower = text.toLowerCase();
+
+    // App launch — no-op since BrowserStack session already launches the app
+    if (lower.includes('app is launched') || lower.includes('app is open') || lower.includes('app is running')) {
+      return { type: 'noop' };
+    }
+
+    // "user is on" screen — treat as wait for that screen
+    const onScreenMatch = text.match(/(?:is on|on screen|on the)\s+["']([^"']+)["']/i);
+    if (onScreenMatch) return { type: 'wait', target: onScreenMatch[1].trim(), duration: 10000 };
 
     // Tap patterns
     const tapMatch = text.match(/(?:tap|click|press)\s+(?:on\s+)?["']?([^"']+)["']?/i);

@@ -34,7 +34,8 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
       .join('\n---\n');
 
     const framework = context.codeAnalysis.framework || 'native';
-    const prompt = `You are a mobile QA expert. Analyze this ${framework} mobile app PR diff and generate Gherkin BDD test scenarios.
+    const prompt = `You are an expert Mobile QA Automation Engineer specializing in Appium and BDD Gherkin.
+Analyze this ${framework} mobile app PR diff and generate executable test scenarios.
 
 The app framework is: ${framework}
 Industry: ${context.codeAnalysis.industry || 'generic'}
@@ -42,20 +43,42 @@ Industry: ${context.codeAnalysis.industry || 'generic'}
 PR changes:
 ${diffSummary}
 
-Generate 3-8 realistic Gherkin scenarios that test the CHANGED functionality. Format:
+## CRITICAL: Appium-Executable Step Syntax
+Every step MUST use one of these exact patterns so the Appium automation parser can execute them.
+Do NOT write descriptive/abstract steps like "the app is installed" or "the device is in dark mode" — those CANNOT be automated.
 
-Feature: <feature name>
+Allowed step formats:
+- TAP: \`When user taps on "<elementId>"\`
+- TYPE: \`And user types "<value>" in "<elementId>"\`
+- SCROLL: \`And user scrolls <up/down>\`
+- SWIPE: \`And user swipes <left/right>\`
+- WAIT: \`And user waits for "<elementId>"\`
+- ASSERT VISIBLE: \`Then user should see "<elementId>"\`
+- ASSERT TEXT: \`Then text shows "<expectedText>"\`
+- BACK: \`And user goes back\`
+- LAUNCH (implicit): \`Given the app is launched\` (this is the ONLY valid Given step)
 
-Scenario: <scenario name>
-  Given <precondition>
-  When <action>
-  Then <expected result>
+## Element ID Rules
+- Use realistic element IDs based on the actual code: accessibility labels, testID props, resource-id values, or visible text
+- For React Native: use testID prop values or component text content
+- Never invent abstract IDs like "safe_area_bounds" — use what actually exists in the code
 
-Focus on:
-- User-visible behavior changes
-- Edge cases for the changed code
-- Platform-specific behavior (Android/iOS)
-Only output Gherkin, no explanations.`;
+## Example
+Scenario: App renders main screen
+  Given the app is launched
+  And user waits for "main_screen"
+  Then user should see "main_screen"
+  And text shows "Welcome"
+
+Scenario: User navigates back from settings
+  Given the app is launched
+  And user taps on "settings_button"
+  And user waits for "settings_screen"
+  And user goes back
+  Then user should see "main_screen"
+
+Generate 3-8 scenarios that test the CHANGED functionality. Focus on user-visible behavior.
+Only output valid Gherkin using the step formats above. No explanations.`;
 
     const response = await claude.prompt(prompt);
     const scenarios = generator.parseResponse(response);
