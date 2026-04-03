@@ -38,8 +38,20 @@ export class AndroidBuilder {
   private buildReactNative(): string {
     try {
       this.logger.log('Building React Native APK');
+
+      // Install JS dependencies first
+      if (!fs.existsSync(path.join(this.rootPath, 'node_modules'))) {
+        this.logger.log('Installing React Native dependencies');
+        execSync('npm install --legacy-peer-deps', { cwd: this.rootPath, stdio: 'inherit' });
+      }
+
       const androidDir = path.join(this.rootPath, 'android');
       const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+
+      // Make gradlew executable
+      if (process.platform !== 'win32' && fs.existsSync(path.join(androidDir, 'gradlew'))) {
+        execSync('chmod +x gradlew', { cwd: androidDir });
+      }
 
       execSync(`${gradlew} assembleRelease`, {
         cwd: androidDir,
