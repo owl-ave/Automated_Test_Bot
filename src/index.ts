@@ -146,6 +146,9 @@ async function main(): Promise<void> {
   logger.log('Pipeline orchestrator starting in hardened mode.', { pr: prNumber, branch: context.branch });
 
   try {
+    // 1. Code Reader (Critical) — must run first to detect framework & mobilePath
+    await executeStep(context, 'CodeReader', () => runCodeReader(context), true);
+
     // 0. App Builder (skip in local mode — needs Android SDK / Xcode)
     if (!localMode) {
       const { runAppBuilder } = await import('./modules/app-builder');
@@ -153,9 +156,6 @@ async function main(): Promise<void> {
     } else {
       logger.log('LOCAL_MODE: Skipping AppBuilder (no build tools needed)');
     }
-
-    // 1. Code Reader (Critical)
-    await executeStep(context, 'CodeReader', () => runCodeReader(context), true);
 
     // 2. App Analyzer (Critical)
     const { runAppAnalyzer } = await import('./modules/app-analyzer');

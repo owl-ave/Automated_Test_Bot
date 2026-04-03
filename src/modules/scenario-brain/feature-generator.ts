@@ -30,6 +30,10 @@ export class FeatureGenerator {
     return scenarios;
   }
 
+  parseResponse(response: string, flowName: string = 'PR Changes'): BddScenario[] {
+    return this.parseFeatures(response, flowName);
+  }
+
   private parseFeatures(response: string, flowName: string): BddScenario[] {
     const scenarios: BddScenario[] = [];
     const lines = response.split('\n');

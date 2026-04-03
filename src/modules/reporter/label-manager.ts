@@ -29,6 +29,11 @@ export class LabelManager {
   ): Promise<string[]> {
     const labelsToAdd = this.determineLabels(testResults, extra);
 
+    if (labelsToAdd.length === 0) {
+      this.logger.log('No labels to add, skipping');
+      return labelsToAdd;
+    }
+
     try {
       // Ensure labels exist on the repo before adding to PR
       for (const label of labelsToAdd) {
