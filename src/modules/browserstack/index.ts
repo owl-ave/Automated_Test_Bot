@@ -74,6 +74,15 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
       allResults.push(...iosResults);
     }
 
+    if (allResults.length === 0) {
+      logger.warn('No tests were executed — no compatible devices found or no scenarios matched', {
+        iosDevices: iosDevices.length,
+        androidDevices: androidDevices.length,
+        minIosVersion,
+      });
+      return { moduleName: 'BrowserStack', status: 'warning', error: 'No compatible devices available for testing' };
+    }
+
     // Store results in context
     context.testResults = allResults;
 

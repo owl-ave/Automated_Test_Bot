@@ -43,7 +43,7 @@ export const DEVICE_MATRIX: Device[] = [
   {
     name: 'iPhone 17 Pro',
     platform: 'iOS',
-    os_version: '26',
+    os_version: '26.2',
     device: 'iPhone 17 Pro',
     browserstack_device_name: 'iPhone 17 Pro',
   },
@@ -51,7 +51,7 @@ export const DEVICE_MATRIX: Device[] = [
   {
     name: 'iPhone 16 Pro',
     platform: 'iOS',
-    os_version: '26',
+    os_version: '26.2',
     device: 'iPhone 16 Pro',
     browserstack_device_name: 'iPhone 16 Pro',
   },
@@ -59,7 +59,7 @@ export const DEVICE_MATRIX: Device[] = [
   {
     name: 'iPhone 15 Pro',
     platform: 'iOS',
-    os_version: '26',
+    os_version: '26.2',
     device: 'iPhone 15 Pro',
     browserstack_device_name: 'iPhone 15 Pro',
   },
@@ -67,7 +67,7 @@ export const DEVICE_MATRIX: Device[] = [
   {
     name: 'iPad Air M3',
     platform: 'iOS',
-    os_version: '26',
+    os_version: '26.2',
     device: 'iPad Air M3',
     browserstack_device_name: 'iPad Air M3',
   },
