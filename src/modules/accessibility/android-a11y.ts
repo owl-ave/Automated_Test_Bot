@@ -27,6 +27,23 @@ export class AndroidAccessibilityChecker {
   private logger = new Logger('AndroidA11y');
   private thresholds = getThresholds();
 
+  analyzeScreenStatically(screen: { name: string; elements: Array<{ id: string; accessibilityId?: string; text?: string }> }): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+    for (const el of screen.elements) {
+      if (!el.accessibilityId && !el.text) {
+        issues.push({
+          type: 'missing-label',
+          severity: 'major',
+          element: el.id || 'unknown',
+          message: `Element "${el.id}" in ${screen.name} has no content description or accessibility label`,
+          suggestion: 'Add android:contentDescription or use Modifier.semantics { contentDescription = "..." }',
+          platform: 'android',
+        });
+      }
+    }
+    return issues;
+  }
+
   async checkScreen(driver: any): Promise<AccessibilityIssue[]> {
     const issues: AccessibilityIssue[] = [];
 

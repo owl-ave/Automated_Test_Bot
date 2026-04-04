@@ -28,17 +28,24 @@ async function askClaude(prompt: string): Promise<string> {
 }
 
 export class LocatorHealer {
-  async healLocator(originalLocator: LocatorStrategy, pageSource: string): Promise<HealResult> {
-    logger.log('Healing broken locator', { strategy: originalLocator.strategy, value: originalLocator.value });
+  async healLocator(originalLocator: LocatorStrategy, pageSource: string, platform?: 'android' | 'ios'): Promise<HealResult> {
+    logger.log('Healing broken locator', { strategy: originalLocator.strategy, value: originalLocator.value, platform });
 
-    // Try strategies in order of reliability
-    const strategies = [
-      () => this.tryAccessibilityId(originalLocator, pageSource),
-      () => this.tryResourceId(originalLocator, pageSource),
-      () => this.tryTextMatch(originalLocator, pageSource),
-      () => this.tryXPath(originalLocator, pageSource),
-      () => this.tryAiFallback(originalLocator, pageSource),
-    ];
+    // Platform-aware strategies in order of reliability
+    const strategies = platform === 'ios'
+      ? [
+          () => this.tryAccessibilityId(originalLocator, pageSource),
+          () => this.tryTextMatch(originalLocator, pageSource),
+          () => this.tryXPath(originalLocator, pageSource),
+          () => this.tryAiFallback(originalLocator, pageSource),
+        ]
+      : [
+          () => this.tryAccessibilityId(originalLocator, pageSource),
+          () => this.tryResourceId(originalLocator, pageSource),
+          () => this.tryTextMatch(originalLocator, pageSource),
+          () => this.tryXPath(originalLocator, pageSource),
+          () => this.tryAiFallback(originalLocator, pageSource),
+        ];
 
     for (const strategy of strategies) {
       const result = await strategy();

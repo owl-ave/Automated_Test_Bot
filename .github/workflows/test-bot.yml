@@ -72,13 +72,63 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Setup Ruby (for CocoaPods)
+        if: hashFiles('target/Podfile') != '' || hashFiles('target/ios/Podfile') != ''
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
       - name: Setup Flutter (if needed)
         run: |
           if [ -f "target/pubspec.yaml" ]; then
-            git clone https://github.com/flutter/flutter.git -b stable $HOME/flutter
+            git clone --depth 1 --branch 3.24.0 https://github.com/flutter/flutter.git $HOME/flutter
             export PATH="$HOME/flutter/bin:$PATH"
             cd target && flutter pub get
           fi
+
+      - name: Detect and prepare target app
+        id: detect-app
+        run: |
+          echo "android=false" >> "$GITHUB_OUTPUT"
+          echo "ios=false" >> "$GITHUB_OUTPUT"
+          echo "framework=unknown" >> "$GITHUB_OUTPUT"
+
+          # React Native
+          if [ -f "target/package.json" ] && grep -q "react-native" target/package.json 2>/dev/null; then
+            echo "framework=react-native" >> "$GITHUB_OUTPUT"
+            echo "android=true" >> "$GITHUB_OUTPUT"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Flutter
+          if [ -f "target/pubspec.yaml" ]; then
+            echo "framework=flutter" >> "$GITHUB_OUTPUT"
+            echo "android=true" >> "$GITHUB_OUTPUT"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Native Android (Kotlin/Java)
+          if [ -f "target/build.gradle" ] || [ -f "target/build.gradle.kts" ] || [ -f "target/app/build.gradle" ] || [ -f "target/app/build.gradle.kts" ]; then
+            echo "framework=kotlin" >> "$GITHUB_OUTPUT"
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Native iOS (Swift)
+          if ls target/*.xcodeproj 1>/dev/null 2>&1 || ls target/*.xcworkspace 1>/dev/null 2>&1; then
+            echo "framework=swift" >> "$GITHUB_OUTPUT"
+            echo "ios=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Check subdirectories (1 level deep)
+          for dir in target/*/; do
+            if [ -f "${dir}build.gradle" ] || [ -f "${dir}build.gradle.kts" ]; then
+              echo "android=true" >> "$GITHUB_OUTPUT"
+            fi
+            if ls "${dir}"*.xcodeproj 1>/dev/null 2>&1 || ls "${dir}"*.xcworkspace 1>/dev/null 2>&1; then
+              echo "ios=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
 
       # ── 5. Install & build bot ──
       - name: Install bot dependencies
@@ -93,7 +143,23 @@ jobs:
         run: ./node_modules/.bin/jest --testPathIgnorePatterns=e2e
         working-directory: bot
 
-      # ── 6. Run the bot against target repo ──
+      # ── 6. Validate required secrets ──
+      - name: Validate secrets
+        run: |
+          missing=""
+          [ -z "$BROWSERSTACK_USERNAME" ] && missing="$missing BROWSERSTACK_USERNAME"
+          [ -z "$BROWSERSTACK_ACCESS_KEY" ] && missing="$missing BROWSERSTACK_ACCESS_KEY"
+          [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && missing="$missing CLAUDE_AUTH_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing required secrets:$missing"
+            exit 1
+          fi
+        env:
+          BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+          BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_AUTH_TOKEN }}
+
+      # ── 7. Run the bot against target repo ──
       - name: Run Automated Testing Bot
         run: |
           PR_NUM="${{ github.event.inputs.pr_number || '0' }}"

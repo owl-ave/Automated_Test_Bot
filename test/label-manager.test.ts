@@ -51,4 +51,36 @@ describe('LabelManager', () => {
     const labels = await manager.updateLabels('o', 'r', 1, []);
     expect(labels).toEqual([]);
   });
+
+  it('adds android-tests-failed label when Android device fails', async () => {
+    const androidFail: TestResult = { scenario: 'test', status: 'fail', device: 'Samsung Galaxy S24', duration: 1000 };
+    const labels = await manager.updateLabels('o', 'r', 1, [androidFail]);
+    expect(labels).toContain('android-tests-failed');
+    expect(labels).not.toContain('ios-tests-failed');
+  });
+
+  it('adds ios-tests-failed label when iOS device fails', async () => {
+    const iosFail: TestResult = { scenario: 'test', status: 'fail', device: 'iPhone 15 Pro', duration: 1000 };
+    const labels = await manager.updateLabels('o', 'r', 1, [iosFail]);
+    expect(labels).toContain('ios-tests-failed');
+    expect(labels).not.toContain('android-tests-failed');
+  });
+
+  it('adds both platform labels when both fail', async () => {
+    const androidFail: TestResult = { scenario: 'test', status: 'fail', device: 'Pixel 8', duration: 1000 };
+    const iosFail: TestResult = { scenario: 'test', status: 'fail', device: 'iPad Air', duration: 1000 };
+    const labels = await manager.updateLabels('o', 'r', 1, [androidFail, iosFail]);
+    expect(labels).toContain('android-tests-failed');
+    expect(labels).toContain('ios-tests-failed');
+  });
+
+  it('adds framework label when framework is provided', async () => {
+    const labels = await manager.updateLabels('o', 'r', 1, [pass], { framework: 'swift' });
+    expect(labels).toContain('framework:swift');
+  });
+
+  it('adds react-native framework label', async () => {
+    const labels = await manager.updateLabels('o', 'r', 1, [pass], { framework: 'react-native' });
+    expect(labels).toContain('framework:react-native');
+  });
 });

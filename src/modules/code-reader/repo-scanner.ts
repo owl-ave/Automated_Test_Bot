@@ -38,6 +38,9 @@ export class RepoScanner {
   }
 
   private scanScreens(framework: string, mobilePath: string): Screen[] {
+    if (framework === 'swift') return this.scanSwiftScreens(mobilePath);
+    if (framework === 'kotlin') return this.scanKotlinScreens(mobilePath);
+
     const screens: Screen[] = [];
     let searchDir = '';
     let fileExt = '';
@@ -62,6 +65,60 @@ export class RepoScanner {
           });
         }
       });
+    }
+
+    return screens;
+  }
+
+  private scanSwiftScreens(mobilePath: string): Screen[] {
+    const screens: Screen[] = [];
+    const files = this.walkDir(mobilePath).filter((f) => f.endsWith('.swift'));
+
+    for (const file of files) {
+      try {
+        const content = fs.readFileSync(file, 'utf-8');
+        const name = path.basename(file, '.swift');
+
+        if (content.includes('UIViewController') || content.includes('UITableViewController') || content.includes('UICollectionViewController')) {
+          screens.push({ name, path: file, type: 'viewcontroller', elements: [] });
+        } else if ((content.includes('import SwiftUI') || content.includes('SwiftUI')) && /struct\s+\w+\s*:\s*View/.test(content)) {
+          screens.push({ name, path: file, type: 'swiftui-view', elements: [] });
+        }
+      } catch { /* ignore unreadable files */ }
+    }
+
+    return screens;
+  }
+
+  private scanKotlinScreens(mobilePath: string): Screen[] {
+    const screens: Screen[] = [];
+    const searchDirs = [
+      path.join(mobilePath, 'app', 'src', 'main', 'java'),
+      path.join(mobilePath, 'app', 'src', 'main', 'kotlin'),
+      mobilePath,
+    ];
+
+    const seen = new Set<string>();
+    for (const dir of searchDirs) {
+      if (!fs.existsSync(dir)) continue;
+      const files = this.walkDir(dir).filter((f) => f.endsWith('.kt'));
+
+      for (const file of files) {
+        if (seen.has(file)) continue;
+        seen.add(file);
+        try {
+          const content = fs.readFileSync(file, 'utf-8');
+          const name = path.basename(file, '.kt');
+
+          if (/:\s*(AppCompat)?Activity\b/.test(content) || /:\s*ComponentActivity\b/.test(content)) {
+            screens.push({ name, path: file, type: 'activity', elements: [] });
+          } else if (/:\s*Fragment\b/.test(content)) {
+            screens.push({ name, path: file, type: 'fragment', elements: [] });
+          } else if (content.includes('@Composable')) {
+            screens.push({ name, path: file, type: 'composable', elements: [] });
+          }
+        } catch { /* ignore unreadable files */ }
+      }
     }
 
     return screens;
@@ -100,7 +157,7 @@ export class RepoScanner {
       fs.readdirSync(dir).forEach((file) => {
         const fullPath = path.join(dir, file);
         if (fs.statSync(fullPath).isDirectory()) {
-          if (!file.includes('node_modules') && !file.includes('.') && !file.includes('dist')) {
+          if (!file.includes('node_modules') && !file.startsWith('.') && !file.includes('dist')) {
             files.push(...this.walkDir(fullPath));
           }
         } else {

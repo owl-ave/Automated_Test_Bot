@@ -20,8 +20,18 @@ export async function runAppAnalyzer(context: PipelineContext): Promise<ModuleRe
       context.codeAnalysis.apiEndpoints,
     );
 
+    const isUiFile = (filePath: string): boolean => {
+      const lower = filePath.toLowerCase();
+      const uiPatterns = ['screen', 'activity', 'fragment', 'composable', 'viewcontroller', 'controller'];
+      if (uiPatterns.some((p) => lower.includes(p))) return true;
+      if (lower.endsWith('.storyboard') || lower.endsWith('.xib')) return true;
+      if (lower.includes('res/layout') && lower.endsWith('.xml')) return true;
+      if (lower.endsWith('.swift') && lower.includes('view')) return true;
+      return false;
+    };
+
     const changedScreenNames = context.diffFiles
-      .filter((f) => f.path.includes('screen') || f.path.includes('activity') || f.path.includes('viewcontroller'))
+      .filter((f) => isUiFile(f.path))
       .map((f) => f.path.split('/').pop() || '');
 
     context.codeAnalysis.criticalFlows = flowMapper.identifyAffectedFlows(

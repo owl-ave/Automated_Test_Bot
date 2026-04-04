@@ -41,7 +41,7 @@ PR Raised → GitHub Action Triggers Bot
 - **Security**: MobSF (Mobile Security Framework) + Nuclei
 - **Visual Regression**: BrowserStack Percy App SDK (mobile screenshot diffing)
 - **Chaos Testing**: Appium network simulation + random gesture injection
-- **Notifications**: Slack Web API, Microsoft Teams Webhooks
+- **Notifications**: GitHub PR comments + labels (integrated into reporter module)
 - **Database**: PostgreSQL + pgvector (historical learning)
 - **CI/CD**: GitHub Actions
 
@@ -96,7 +96,7 @@ AutomatedTestingBot/
 │   │   │   ├── pr-commenter.ts      # Posts results on GitHub PR
 │   │   │   ├── label-manager.ts     # Adds pass/fail labels
 │   │   │   ├── merge-blocker.ts     # Blocks merge on critical failure
-│   │   │   └── notifications.ts     # Slack + Teams alerts
+│   │   │   └── (notifications removed — reporting via GitHub PR comments)
 │   │   ├── accessibility/           # Module 9: Mobile accessibility
 │   │   │   ├── android-a11y.ts      # Android Accessibility Scanner checks
 │   │   │   ├── ios-a11y.ts          # iOS VoiceOver / Accessibility Inspector checks
@@ -193,8 +193,6 @@ BROWSERSTACK_USERNAME=      # BrowserStack credentials
 BROWSERSTACK_ACCESS_KEY=
 PERCY_TOKEN=                # Percy App visual regression token
 MOBSF_API_KEY=              # MobSF security scanner API key (optional)
-SLACK_WEBHOOK_URL=          # Slack notification webhook (optional)
-TEAMS_WEBHOOK_URL=          # Teams notification webhook (optional)
 DATABASE_URL=               # PostgreSQL connection string (for Module 16)
 ANDROID_KEYSTORE_PATH=      # For signing debug APK (if needed)
 IOS_PROVISIONING_PROFILE=   # For building IPA (if needed)

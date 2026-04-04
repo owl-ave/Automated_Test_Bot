@@ -3,6 +3,21 @@ import { FeatureGenerator } from './feature-generator';
 import { ClaudeClient } from '../../ai/claude-client';
 import { Logger } from '../../utils/logger';
 
+function getElementIdRules(framework: string): string {
+  switch (framework) {
+    case 'react-native':
+      return '- For React Native: use testID prop values (e.g., testID="login_button") or component text content';
+    case 'swift':
+      return '- For iOS/Swift: use accessibilityIdentifier values (preferred), accessibilityLabel, or visible button/label text\n- For SwiftUI: use .accessibilityIdentifier("id") values';
+    case 'kotlin':
+      return '- For Android/Kotlin: use android:id resource-id values (e.g., "login_button"), android:contentDescription, or visible text\n- For Jetpack Compose: use Modifier.testTag("tag") values';
+    case 'flutter':
+      return '- For Flutter: use Key values (e.g., Key("login_button")), Semantics labels, or visible text content';
+    default:
+      return '- Use accessibility IDs, resource-ids, or visible text content from the actual code';
+  }
+}
+
 export async function runScenarioBrain(context: PipelineContext): Promise<ModuleResult> {
   const logger = new Logger('ScenarioBrain');
 
@@ -18,6 +33,7 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
       const scenarios = await generator.generateFeatures(
         context.codeAnalysis.industry,
         context.codeAnalysis.criticalFlows,
+        context.codeAnalysis.framework,
       );
       context.scenariosBdd = scenarios;
       logger.log('Feature generation complete (from flows)', { scenarios: scenarios.length });
@@ -59,9 +75,8 @@ Allowed step formats:
 - LAUNCH (implicit): \`Given the app is launched\` (this is the ONLY valid Given step)
 
 ## Element ID Rules
-- Use realistic element IDs based on the actual code: accessibility labels, testID props, resource-id values, or visible text
-- For React Native: use testID prop values or component text content
-- Never invent abstract IDs like "safe_area_bounds" — use what actually exists in the code
+- Use realistic element IDs based on the actual code — never invent abstract IDs like "safe_area_bounds"
+${getElementIdRules(framework)}
 
 ## Example
 Scenario: App renders main screen

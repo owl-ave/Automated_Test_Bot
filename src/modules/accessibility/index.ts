@@ -43,54 +43,55 @@ export async function runAccessibility(context: PipelineContext): Promise<Module
       };
     }
 
-    // Run Android accessibility checks
-    if (testAndroid) {
-      const androidChecker = new AndroidAccessibilityChecker();
-      const androidDriver = (context as any).androidDriver;
+    // Get drivers from active BrowserStack sessions (set by executor)
+    const activeDrivers: Array<{ driver: any; platform: string }> = (context as any).activeDrivers || [];
 
-      if (androidDriver) {
-        for (const screen of screens) {
-          try {
-            await navigateToScreen(androidDriver, screen.name, 'android');
-            const issues = await androidChecker.checkScreen(androidDriver);
-            allIssues.push(...issues);
-          } catch (err) {
-            logger.warn(`Failed to check Android screen: ${screen.name}`, err);
-          }
-        }
-
-        // Check current screen if no specific screens
-        if (screens.length === 0) {
-          const issues = await androidChecker.checkScreen(androidDriver);
-          allIssues.push(...issues);
-        }
-      } else {
-        logger.warn('No Android driver available for accessibility testing');
-      }
+    // Fallback: check for legacy driver references
+    if (activeDrivers.length === 0) {
+      if ((context as any).androidDriver) activeDrivers.push({ driver: (context as any).androidDriver, platform: 'android' });
+      if ((context as any).iosDriver) activeDrivers.push({ driver: (context as any).iosDriver, platform: 'ios' });
     }
 
-    // Run iOS accessibility checks
-    if (testIos) {
+    if (activeDrivers.length === 0) {
+      // Run static code analysis for accessibility instead of runtime checks
+      logger.log('No active drivers — running static accessibility analysis from code');
+      const androidChecker = new AndroidAccessibilityChecker();
       const iosChecker = new IosAccessibilityChecker();
-      const iosDriver = (context as any).iosDriver;
 
-      if (iosDriver) {
+      // Analyze screens from code analysis for common accessibility issues
+      for (const screen of screens) {
+        if (testAndroid) {
+          const issues = androidChecker.analyzeScreenStatically(screen);
+          allIssues.push(...issues);
+        }
+        if (testIos) {
+          const issues = iosChecker.analyzeScreenStatically(screen);
+          allIssues.push(...issues);
+        }
+      }
+    } else {
+      // Run runtime accessibility checks on active drivers
+      for (const { driver, platform } of activeDrivers) {
+        const checker = platform === 'ios' ? new IosAccessibilityChecker() : new AndroidAccessibilityChecker();
+
         for (const screen of screens) {
           try {
-            await navigateToScreen(iosDriver, screen.name, 'ios');
-            const issues = await iosChecker.checkScreen(iosDriver);
+            await navigateToScreen(driver, screen.name, platform);
+            const issues = await checker.checkScreen(driver);
             allIssues.push(...issues);
           } catch (err) {
-            logger.warn(`Failed to check iOS screen: ${screen.name}`, err);
+            logger.warn(`Failed to check ${platform} screen: ${screen.name}`, err);
           }
         }
 
         if (screens.length === 0) {
-          const issues = await iosChecker.checkScreen(iosDriver);
-          allIssues.push(...issues);
+          try {
+            const issues = await checker.checkScreen(driver);
+            allIssues.push(...issues);
+          } catch (err) {
+            logger.warn(`Failed to check ${platform} current screen`, err);
+          }
         }
-      } else {
-        logger.warn('No iOS driver available for accessibility testing');
       }
     }
 

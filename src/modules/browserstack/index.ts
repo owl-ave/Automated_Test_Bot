@@ -14,12 +14,17 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
 
     const executor = new TestExecutor();
 
-    // Determine platform from code analysis
+    // Determine platform from code analysis and available app builds
     const framework = context.codeAnalysis?.framework;
-    const platform =
-      framework === 'swift' || framework === 'native'
-        ? 'both' // default to both unless we know it's single-platform
-        : 'both';
+    const hasAndroid = !!context.appBuild?.androidAppUrl;
+    const hasIos = !!context.appBuild?.iosAppUrl;
+    const platform: 'android' | 'ios' | 'both' =
+      framework === 'swift' ? 'ios' :
+      framework === 'kotlin' ? 'android' :
+      (hasAndroid && hasIos) ? 'both' :
+      hasAndroid ? 'android' :
+      hasIos ? 'ios' :
+      'both';
 
     // Use minimal device set for quick PR checks, full matrix for release branches
     const isReleaseBranch = context.branch.startsWith('release/') || context.branch === 'main';

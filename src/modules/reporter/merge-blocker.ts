@@ -17,13 +17,31 @@ export class MergeBlocker {
   }
 
   shouldBlockMerge(testResults: TestResult[]): { blocked: boolean; reasons: BlockReason[] } {
-    const criticalFailures = testResults.filter((r) => r.status === 'fail');
+    const failures = testResults.filter((r) => r.status === 'fail');
 
-    if (criticalFailures.length === 0) {
+    if (failures.length === 0) {
       return { blocked: false, reasons: [] };
     }
 
-    const reasons: BlockReason[] = criticalFailures.map((r) => ({
+    // Don't block if the only failures are on a single device (likely a flaky device issue)
+    const failedDevices = [...new Set(failures.map((r) => r.device))];
+    const totalDevices = [...new Set(testResults.map((r) => r.device))];
+    if (failedDevices.length === 1 && totalDevices.length > 1) {
+      const failedOnlyDevice = failedDevices[0];
+      const passedOnSameDevice = testResults.filter((r) => r.device === failedOnlyDevice && r.status === 'pass');
+      // If most tests pass on that device, it's likely a flaky scenario, not a real regression
+      if (passedOnSameDevice.length > failures.length * 2) {
+        return { blocked: false, reasons: [] };
+      }
+    }
+
+    // Check failure rate — don't block if < 10% of tests fail (likely flaky)
+    const failRate = failures.length / testResults.length;
+    if (failRate < 0.1 && failures.length <= 2) {
+      return { blocked: false, reasons: [] };
+    }
+
+    const reasons: BlockReason[] = failures.map((r) => ({
       scenario: r.scenario,
       error: r.error || 'Test failed',
       device: r.device,

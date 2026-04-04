@@ -41,8 +41,12 @@ export class TestExecutor {
       try {
         session = await this.createSession(appUrl, device);
 
-        for (const scenario of scenarios) {
-          const result = await this.executeScenario(session, scenario);
+        for (let i = 0; i < scenarios.length; i++) {
+          // Reset app state between scenarios to prevent state leakage
+          if (i > 0) {
+            try { await session.driver.resetApp(); await new Promise(r => setTimeout(r, 2000)); } catch { /* reset not supported on all platforms */ }
+          }
+          const result = await this.executeScenario(session, scenarios[i]);
           results.push(result);
         }
       } catch (error) {
@@ -187,7 +191,7 @@ export class TestExecutor {
       try {
         // Predictive gatekeeping: wait for element availability before interacting
         if (['tap', 'type', 'longpress'].includes(action.type) && action.target) {
-          await this.waitForElement(session.driver, action.target, TIMEOUTS.ELEMENT_WAIT);
+          await this.waitForElement(session.driver, action.target, TIMEOUTS.ELEMENT_WAIT, session.device);
         }
 
         switch (action.type) {
@@ -207,11 +211,11 @@ export class TestExecutor {
             await this.gestures.longPress(session.driver, action.target!, action.duration);
             break;
           case 'wait':
-            await this.waitForElement(session.driver, action.target!, action.duration || TIMEOUTS.ELEMENT_ASSERT_WAIT);
+            await this.waitForElement(session.driver, action.target!, action.duration || TIMEOUTS.ELEMENT_ASSERT_WAIT, session.device);
             break;
           case 'assert_visible':
-            await this.waitForElement(session.driver, action.target!, TIMEOUTS.ELEMENT_ASSERT_WAIT);
-            await this.assertElementVisible(session.driver, action.target!);
+            await this.waitForElement(session.driver, action.target!, TIMEOUTS.ELEMENT_ASSERT_WAIT, session.device);
+            await this.assertElementVisible(session.driver, action.target!, session.device);
             break;
           case 'assert_text':
             await this.assertElementText(session.driver, action.target!, action.value!);
@@ -310,30 +314,42 @@ export class TestExecutor {
     return { type: 'unknown' };
   }
 
-  private async waitForElement(driver: any, elementId: string, timeoutMs: number): Promise<void> {
+  private getLocatorStrategies(device?: Device): string[] {
+    if (device?.platform === 'iOS') {
+      return ['accessibility id', 'name', 'xpath'];
+    }
+    return ['accessibility id', 'id', 'xpath'];
+  }
+
+  private async waitForElement(driver: any, elementId: string, timeoutMs: number, device?: Device): Promise<void> {
+    const strategies = this.getLocatorStrategies(device);
     const start = Date.now();
     let pollInterval = 500;
     while (Date.now() - start < timeoutMs) {
-      try {
-        const el = await driver.findElement('accessibility id', elementId);
-        if (el) return;
-      } catch {
-        // element not found yet
+      for (const strategy of strategies) {
+        try {
+          const selector = strategy === 'xpath'
+            ? `//*[contains(@text,"${elementId}") or contains(@content-desc,"${elementId}") or contains(@label,"${elementId}") or contains(@name,"${elementId}")]`
+            : elementId;
+          const el = await driver.findElement(strategy, selector);
+          if (el) return;
+        } catch {
+          // element not found with this strategy
+        }
       }
       await new Promise((resolve) => setTimeout(resolve, pollInterval));
-      // Increase polling incrementally to avoid spamming the Appium hub
       pollInterval = Math.min(pollInterval * 1.5, 2000);
     }
     throw new Error(`Wait timeout: Element "${elementId}" not found within ${timeoutMs}ms`);
   }
 
-  private async assertElementVisible(driver: any, elementId: string): Promise<void> {
-    const strategies = ['accessibility id', 'id', 'xpath'];
+  private async assertElementVisible(driver: any, elementId: string, device?: Device): Promise<void> {
+    const strategies = this.getLocatorStrategies(device);
     for (const strategy of strategies) {
       try {
         const selector =
           strategy === 'xpath'
-            ? `//*[contains(@text,"${elementId}") or contains(@content-desc,"${elementId}") or contains(@label,"${elementId}")]`
+            ? `//*[contains(@text,"${elementId}") or contains(@content-desc,"${elementId}") or contains(@label,"${elementId}") or contains(@name,"${elementId}")]`
             : elementId;
         const el = await driver.findElement(strategy, selector);
         if (el) {

@@ -57,6 +57,7 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
 
     // --- Option 2: Build from source ---
     const buildPath = context.mobilePath || context.targetPath;
+    const framework = context.codeAnalysis?.framework;
 
     if (!buildPath || buildPath === context.targetPath) {
       // Double check — no mobilePath means CodeReader didn't find a mobile project
@@ -75,42 +76,55 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
       }
     }
 
-    logger.log('Building from mobile path', { buildPath });
+    // Determine which platforms to build based on detected framework
+    // Swift-only → iOS only, Kotlin-only → Android only, cross-platform → both
+    const shouldBuildAndroid = framework !== 'swift';
+    const shouldBuildIos = framework !== 'kotlin';
+
+    logger.log('Building from mobile path', { buildPath, framework, android: shouldBuildAndroid, ios: shouldBuildIos });
 
     // Build Android
-    try {
-      logger.log('Starting Android build');
-      const androidBuilder = new AndroidBuilder(buildPath);
-      const androidApkPath = await androidBuilder.build();
+    if (shouldBuildAndroid) {
+      try {
+        logger.log('Starting Android build');
+        const androidBuilder = new AndroidBuilder(buildPath);
+        const androidApkPath = await androidBuilder.build();
 
-      logger.log('Android APK built, uploading to BrowserStack', { apkPath: androidApkPath });
-      const androidCustomId = `android-pr-${buildId}`;
-      const androidUpload = await uploader.uploadApp(androidApkPath, androidCustomId);
+        logger.log('Android APK built, uploading to BrowserStack', { apkPath: androidApkPath });
+        const androidCustomId = `android-pr-${buildId}`;
+        const androidUpload = await uploader.uploadApp(androidApkPath, androidCustomId);
 
-      buildResult.androidAppUrl = androidUpload.app_url;
-      buildResult.androidCustomId = androidCustomId;
-      logger.log('Android app uploaded', { app_url: androidUpload.app_url });
-    } catch (error) {
-      logger.warn('Android build failed, continuing with iOS', error);
-      context.logs.push(`AppBuilder - Android: ${String(error)}`);
+        buildResult.androidAppUrl = androidUpload.app_url;
+        buildResult.androidCustomId = androidCustomId;
+        logger.log('Android app uploaded', { app_url: androidUpload.app_url });
+      } catch (error) {
+        logger.warn('Android build failed, continuing with iOS', error);
+        context.logs.push(`AppBuilder - Android: ${String(error)}`);
+      }
+    } else {
+      logger.log('Skipping Android build — Swift/iOS-only project detected');
     }
 
     // Build iOS
-    try {
-      logger.log('Starting iOS build');
-      const iosBuilder = new IosBuilder(buildPath);
-      const iosIpaPath = await iosBuilder.build();
+    if (shouldBuildIos) {
+      try {
+        logger.log('Starting iOS build');
+        const iosBuilder = new IosBuilder(buildPath);
+        const iosIpaPath = await iosBuilder.build();
 
-      logger.log('iOS IPA built, uploading to BrowserStack', { ipaPath: iosIpaPath });
-      const iosCustomId = `ios-pr-${buildId}`;
-      const iosUpload = await uploader.uploadApp(iosIpaPath, iosCustomId);
+        logger.log('iOS IPA built, uploading to BrowserStack', { ipaPath: iosIpaPath });
+        const iosCustomId = `ios-pr-${buildId}`;
+        const iosUpload = await uploader.uploadApp(iosIpaPath, iosCustomId);
 
-      buildResult.iosAppUrl = iosUpload.app_url;
-      buildResult.iosCustomId = iosCustomId;
-      logger.log('iOS app uploaded', { app_url: iosUpload.app_url });
-    } catch (error) {
-      logger.warn('iOS build failed, continuing', error);
-      context.logs.push(`AppBuilder - iOS: ${String(error)}`);
+        buildResult.iosAppUrl = iosUpload.app_url;
+        buildResult.iosCustomId = iosCustomId;
+        logger.log('iOS app uploaded', { app_url: iosUpload.app_url });
+      } catch (error) {
+        logger.warn('iOS build failed, continuing', error);
+        context.logs.push(`AppBuilder - iOS: ${String(error)}`);
+      }
+    } else {
+      logger.log('Skipping iOS build — Kotlin/Android-only project detected');
     }
 
     if (!buildResult.androidAppUrl && !buildResult.iosAppUrl) {

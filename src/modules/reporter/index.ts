@@ -31,7 +31,9 @@ export async function runReporter(context: PipelineContext): Promise<ModuleResul
     // Update labels (non-fatal)
     try {
       const labelManager = new LabelManager(github);
-      await labelManager.updateLabels(context.repoOwner, context.repoName, context.prNumber, results);
+      await labelManager.updateLabels(context.repoOwner, context.repoName, context.prNumber, results, {
+        framework: context.codeAnalysis?.framework,
+      });
     } catch (err) {
       logger.warn('Label update failed (non-fatal)', err);
     }

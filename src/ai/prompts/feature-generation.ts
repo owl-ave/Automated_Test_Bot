@@ -1,6 +1,22 @@
-export function getFeatureGenerationPrompt(industry: string, flowName: string, screenNames: string[]): string {
+function getElementIdGuidance(framework?: string): string {
+  switch (framework) {
+    case 'react-native':
+      return '- Use testID prop values (e.g., testID="login_button") or component text content';
+    case 'swift':
+      return '- Use accessibilityIdentifier values (preferred), accessibilityLabel, or visible text\n- For SwiftUI views: use .accessibilityIdentifier("id") values';
+    case 'kotlin':
+      return '- Use android:id resource-id values (e.g., "login_button"), android:contentDescription, or visible text\n- For Jetpack Compose: use Modifier.testTag("tag") values';
+    case 'flutter':
+      return '- Use Key values (e.g., Key("login_button")), Semantics labels, or visible text content';
+    default:
+      return '- Use accessibility IDs, resource-ids, or visible text from the actual code';
+  }
+}
+
+export function getFeatureGenerationPrompt(industry: string, flowName: string, screenNames: string[], framework?: string): string {
+  const platformLabel = framework && framework !== 'native' ? ` (${framework})` : '';
   return `Act as an expert Mobile QA Automation Engineer specializing in Appium and BDD Gherkin.
-You are writing test scenarios for a ${industry} mobile app.
+You are writing test scenarios for a ${industry}${platformLabel} mobile app.
 
 Flow: ${flowName}
 Screens Involved: ${screenNames.join(' → ')}
@@ -21,6 +37,9 @@ You MUST strictly follow these step formats so the Appium parser can execute the
 - ASSERT VISIBLE: \`Then user should see "<elementId>"\`
 - ASSERT TEXT: \`Then text shows "<expectedText>"\`
 - BACK: \`And user goes back\`
+
+## Element ID Rules
+${getElementIdGuidance(framework)}
 
 ## Multi-Shot Example
 Scenario: Happy Path Login

@@ -11,12 +11,12 @@ export class FeatureGenerator {
     this.claudeClient = new ClaudeClient();
   }
 
-  async generateFeatures(industry: string, flows: Flow[]): Promise<BddScenario[]> {
+  async generateFeatures(industry: string, flows: Flow[], framework?: string): Promise<BddScenario[]> {
     const scenarios: BddScenario[] = [];
 
     for (const flow of flows) {
       try {
-        const prompt = getFeatureGenerationPrompt(industry, flow.name, flow.screens);
+        const prompt = getFeatureGenerationPrompt(industry, flow.name, flow.screens, framework);
         const response = await this.claudeClient.analyzeCode('', prompt);
 
         const parsed = this.parseFeatures(response, flow.name);

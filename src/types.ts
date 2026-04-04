@@ -48,7 +48,7 @@ export interface CodeAnalysis {
 export interface Screen {
   name: string;
   path: string;
-  type: 'activity' | 'fragment' | 'viewcontroller' | 'screen';
+  type: 'activity' | 'fragment' | 'viewcontroller' | 'screen' | 'composable' | 'swiftui-view';
   elements: Element[];
 }
 

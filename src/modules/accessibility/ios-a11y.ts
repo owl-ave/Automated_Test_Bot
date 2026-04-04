@@ -8,6 +8,23 @@ export class IosAccessibilityChecker {
   private logger = new Logger('iOSA11y');
   private thresholds = getThresholds();
 
+  analyzeScreenStatically(screen: { name: string; elements: Array<{ id: string; accessibilityId?: string; text?: string }> }): AccessibilityIssue[] {
+    const issues: AccessibilityIssue[] = [];
+    for (const el of screen.elements) {
+      if (!el.accessibilityId && !el.text) {
+        issues.push({
+          type: 'missing-label',
+          severity: 'major',
+          element: el.id || 'unknown',
+          message: `Element "${el.id}" in ${screen.name} has no accessibilityLabel or accessibilityIdentifier`,
+          suggestion: 'Add .accessibilityLabel("...") or .accessibilityIdentifier("...") for VoiceOver support',
+          platform: 'ios',
+        });
+      }
+    }
+    return issues;
+  }
+
   async checkScreen(driver: any): Promise<AccessibilityIssue[]> {
     const issues: AccessibilityIssue[] = [];
 

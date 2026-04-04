@@ -16,21 +16,8 @@ export class FrameworkDetector {
   private logger = new Logger('FrameworkDetector');
 
   detect(rootPath: string): FrameworkDetection {
-    // First check root, then scan common subdirectories
-    const dirsToCheck = [rootPath];
-
-    try {
-      const entries = fs.readdirSync(rootPath);
-      for (const entry of entries) {
-        if (entry.startsWith('.') || entry === 'node_modules' || entry === 'build' || entry === 'dist') continue;
-        const fullPath = path.join(rootPath, entry);
-        try {
-          if (fs.statSync(fullPath).isDirectory()) {
-            dirsToCheck.push(fullPath);
-          }
-        } catch { /* ignore */ }
-      }
-    } catch { /* ignore */ }
+    // Check root + subdirectories up to 2 levels deep
+    const dirsToCheck = this.collectDirs(rootPath, 2);
 
     let bestOverall: { detection: FrameworkDetection; score: number } | null = null;
 
@@ -47,6 +34,9 @@ export class FrameworkDetector {
           bestOverall = { detection, score: detection.confidence };
         }
       }
+
+      // Early exit if we have high confidence
+      if (bestOverall && bestOverall.score >= 80) break;
     }
 
     if (!bestOverall || bestOverall.score === 0) {
@@ -321,6 +311,30 @@ export class FrameworkDetector {
       buildSystem: 'xcode',
       mobilePath: rootPath,
     };
+  }
+
+  private collectDirs(rootDir: string, maxDepth: number): string[] {
+    const skipDirs = new Set(['.', 'node_modules', 'build', 'dist', 'Pods', '.git']);
+    const dirs = [rootDir];
+
+    const scan = (dir: string, depth: number) => {
+      if (depth >= maxDepth) return;
+      try {
+        for (const entry of fs.readdirSync(dir)) {
+          if (entry.startsWith('.') || skipDirs.has(entry)) continue;
+          const fullPath = path.join(dir, entry);
+          try {
+            if (fs.statSync(fullPath).isDirectory()) {
+              dirs.push(fullPath);
+              scan(fullPath, depth + 1);
+            }
+          } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+    };
+
+    scan(rootDir, 0);
+    return dirs;
   }
 
   private findFiles(dir: string, pattern: RegExp, maxDepth: number, currentDepth = 0): string[] {

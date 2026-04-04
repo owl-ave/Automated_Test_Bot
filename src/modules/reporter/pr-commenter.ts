@@ -24,6 +24,12 @@ export class PrCommenter {
 
     const sections: ReportSection[] = [];
 
+    // Test environment — framework, platform, devices, build info
+    sections.push({
+      title: 'Test Environment',
+      content: this.buildEnvironmentSection(context),
+    });
+
     // Pipeline execution summary — always show what actually happened
     sections.push({
       title: 'Pipeline Execution',
@@ -74,6 +80,57 @@ export class PrCommenter {
     }
 
     return this.assembleReport(sections);
+  }
+
+  private buildEnvironmentSection(context: PipelineContext): string {
+    const lines: string[] = [];
+    const framework = context.codeAnalysis?.framework || 'unknown';
+    const frameworkLabel: Record<string, string> = {
+      'react-native': 'React Native',
+      flutter: 'Flutter',
+      swift: 'iOS Native (Swift)',
+      kotlin: 'Android Native (Kotlin)',
+      native: 'Native',
+    };
+
+    lines.push(`| Property | Value |`);
+    lines.push(`|----------|-------|`);
+    lines.push(`| **Framework** | ${frameworkLabel[framework] || framework} |`);
+
+    if (context.codeAnalysis) {
+      const subFw = (context.codeAnalysis as any).subFramework;
+      if (subFw) lines.push(`| **UI Framework** | ${subFw} |`);
+    }
+
+    // Platforms tested
+    const platforms: string[] = [];
+    if (context.appBuild?.androidAppUrl) platforms.push('Android');
+    if (context.appBuild?.iosAppUrl) platforms.push('iOS');
+    if (platforms.length > 0) lines.push(`| **Platforms** | ${platforms.join(', ')} |`);
+
+    // Build artifacts
+    if (context.appBuild?.androidAppUrl) {
+      lines.push(`| **Android Build** | \`${context.appBuild.androidCustomId || 'uploaded'}\` |`);
+    }
+    if (context.appBuild?.iosAppUrl) {
+      lines.push(`| **iOS Build** | \`${context.appBuild.iosCustomId || 'uploaded'}\` |`);
+    }
+
+    // Devices tested
+    const results = context.testResults || [];
+    const devices = [...new Set(results.map((r) => r.device))];
+    if (devices.length > 0) lines.push(`| **Devices** | ${devices.join(', ')} |`);
+
+    // Total pipeline time
+    const totalMs = (context.moduleStatuses || []).reduce((sum, m) => sum + m.durationMs, 0);
+    if (totalMs > 0) {
+      const totalSec = (totalMs / 1000).toFixed(1);
+      lines.push(`| **Pipeline Duration** | ${totalSec}s |`);
+    }
+
+    lines.push(`| **Branch** | \`${context.branch}\` |`);
+
+    return lines.join('\n');
   }
 
   private buildPipelineSection(statuses: ModuleStatus[], hasTestResults: boolean): string {
@@ -148,6 +205,9 @@ export class PrCommenter {
         if (t.videoUrl) {
           lines.push(`- **Video**: [Watch Test Recording](${t.videoUrl})`);
         }
+        if (t.sessionId) {
+          lines.push(`- **Session**: [View on BrowserStack](https://app-automate.browserstack.com/sessions/${t.sessionId})`);
+        }
         return lines.join('\n');
       })
       .join('\n\n---\n\n');
@@ -166,7 +226,8 @@ export class PrCommenter {
     const rows = passed
       .map((t) => {
         const video = t.videoUrl ? `[Watch](${t.videoUrl})` : '-';
-        return `| ${t.scenario} | ${t.device} | ${(t.duration / 1000).toFixed(1)}s | ${video} |`;
+        const session = t.sessionId ? `[Session](https://app-automate.browserstack.com/sessions/${t.sessionId})` : '-';
+        return `| ${t.scenario} | ${t.device} | ${(t.duration / 1000).toFixed(1)}s | ${video} | ${session} |`;
       })
       .join('\n');
 
@@ -174,8 +235,8 @@ export class PrCommenter {
       '<details>',
       '<summary>View passing tests</summary>',
       '',
-      '| Scenario | Device | Duration | Video |',
-      '|----------|--------|----------|-------|',
+      '| Scenario | Device | Duration | Video | Session |',
+      '|----------|--------|----------|-------|---------|',
       rows,
       '',
       '</details>',

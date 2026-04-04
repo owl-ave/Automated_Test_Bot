@@ -52,5 +52,36 @@ describe('MergeBlocker', () => {
       const { blocked } = blocker.shouldBlockMerge([]);
       expect(blocked).toBe(false);
     });
+
+    it('does not block when failure rate is below 10% with 1-2 failures', () => {
+      // 1 fail out of 20+ tests = < 10%
+      const manyPasses = Array.from({ length: 20 }, (_, i) => ({
+        scenario: `Test ${i}`,
+        status: 'pass' as const,
+        device: i % 2 === 0 ? 'Pixel 8' : 'iPhone 15',
+        duration: 1000,
+      }));
+      const oneFail: TestResult = { scenario: 'Flaky test', status: 'fail', device: 'Pixel 8', duration: 1000, error: 'Timeout' };
+      const { blocked } = blocker.shouldBlockMerge([...manyPasses, oneFail]);
+      expect(blocked).toBe(false);
+    });
+
+    it('blocks when failure rate exceeds 10%', () => {
+      const fewPasses = Array.from({ length: 5 }, (_, i) => ({
+        scenario: `Test ${i}`,
+        status: 'pass' as const,
+        device: 'Pixel 8',
+        duration: 1000,
+      }));
+      const threeFails = Array.from({ length: 3 }, (_, i) => ({
+        scenario: `Failing ${i}`,
+        status: 'fail' as const,
+        device: 'iPhone 15',
+        duration: 1000,
+        error: 'Crash',
+      }));
+      const { blocked } = blocker.shouldBlockMerge([...fewPasses, ...threeFails]);
+      expect(blocked).toBe(true);
+    });
   });
 });

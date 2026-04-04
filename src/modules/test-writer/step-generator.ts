@@ -3,15 +3,18 @@ import { Logger } from '../../utils/logger';
 
 export class StepGenerator {
   private logger = new Logger('StepGenerator');
+  private framework: string = 'react-native';
 
-  generateAppiumSteps(scenarios: BddScenario[]): string {
+  generateAppiumSteps(scenarios: BddScenario[], framework?: string): string {
+    this.framework = framework || 'react-native';
+    const platformName = (framework === 'swift') ? 'iOS' : (framework === 'kotlin') ? 'Android' : 'Android';
     let code = `import { remote } from 'webdriverio';\n\ndescribe('Mobile Tests', () => {\n`;
 
     scenarios.forEach((scenario) => {
       code += `\n  describe('${scenario.feature}', () => {\n`;
       code += `    it('${scenario.scenario}', async () => {\n`;
       code += `      const driver = await remote({\n`;
-      code += `        capabilities: { platformName: 'Android', deviceName: 'emulator' }\n`;
+      code += `        capabilities: { platformName: '${platformName}', deviceName: 'emulator' }\n`;
       code += `      });\n\n`;
 
       scenario.steps.forEach((step) => {
@@ -38,7 +41,9 @@ export class StepGenerator {
       if (text.includes('light mode') || text.includes('light theme'))
         return `      // Light mode is the default theme\n`;
       if (text.includes('dark mode') || text.includes('dark theme'))
-        return `      await driver.execute('mobile: shell', { command: 'cmd uimode night yes' });\n`;
+        return this.framework === 'swift'
+          ? `      // iOS: Dark mode set via BrowserStack device settings or XCUITest\n      await driver.execute('mobile: setAppearance', { style: 'dark' });\n`
+          : `      await driver.execute('mobile: shell', { command: 'cmd uimode night yes' });\n`;
       if (text.includes('logged in') || text.includes('signed in') || text.includes('authenticated'))
         return `      // Precondition: User is logged in\n`;
       if (text.includes('notch') || text.includes('dynamic island'))
@@ -268,9 +273,13 @@ export class StepGenerator {
     // PERMISSIONS
     // ══════════════════════════════════════════════
     if (text.includes('allow') || (text.includes('permission') && !text.includes('deny')))
-      return `      try {\n        const allowBtn = await driver.$('//*[@text="Allow" or @text="ALLOW" or @text="While using the app"]');\n        await allowBtn.click();\n      } catch {} // permission may not appear\n`;
+      return this.framework === 'swift'
+        ? `      try {\n        const allowBtn = await driver.$('-ios predicate string:label == "Allow" OR label == "OK" OR label == "While Using the App"');\n        await allowBtn.click();\n      } catch {} // permission may not appear\n`
+        : `      try {\n        const allowBtn = await driver.$('//*[@text="Allow" or @text="ALLOW" or @text="While using the app"]');\n        await allowBtn.click();\n      } catch {} // permission may not appear\n`;
     if (text.includes('deny') || (text.includes('permission') && text.includes('deny')))
-      return `      try {\n        const denyBtn = await driver.$('//*[@text="Deny" or @text="DENY" or @text="Don\\'t allow"]');\n        await denyBtn.click();\n      } catch {}\n`;
+      return this.framework === 'swift'
+        ? `      try {\n        const denyBtn = await driver.$('-ios predicate string:label == "Don\\'t Allow" OR label == "Deny"');\n        await denyBtn.click();\n      } catch {}\n`
+        : `      try {\n        const denyBtn = await driver.$('//*[@text="Deny" or @text="DENY" or @text="Don\\'t allow"]');\n        await denyBtn.click();\n      } catch {}\n`;
 
     // ══════════════════════════════════════════════
     // ORIENTATION
@@ -409,11 +418,27 @@ export class StepGenerator {
   // ══════════════════════════════════════════════
 
   private findAndClick(el: string): string {
-    return `      const ${this.varName(el)} = await driver.$('~${el}');\n      await ${this.varName(el)}.waitForDisplayed({ timeout: 10000 });\n      await ${this.varName(el)}.click();\n`;
+    const locator = this.buildLocator(el);
+    return `      const ${this.varName(el)} = await driver.$(${locator});\n      await ${this.varName(el)}.waitForDisplayed({ timeout: 10000 });\n      await ${this.varName(el)}.click();\n`;
   }
 
   private findAndType(field: string, value: string): string {
-    return `      const ${this.varName(field)} = await driver.$('~${field}');\n      await ${this.varName(field)}.waitForDisplayed({ timeout: 10000 });\n      await ${this.varName(field)}.setValue('${value}');\n`;
+    const locator = this.buildLocator(field);
+    return `      const ${this.varName(field)} = await driver.$(${locator});\n      await ${this.varName(field)}.waitForDisplayed({ timeout: 10000 });\n      await ${this.varName(field)}.setValue('${value}');\n`;
+  }
+
+  private buildLocator(el: string): string {
+    // Platform-aware locator strategy
+    switch (this.framework) {
+      case 'swift':
+        return `'~${el}'`; // iOS: accessibility identifier
+      case 'kotlin':
+        return `'android=new UiSelector().resourceId("${el}").descriptionContains("${el}")'`; // Android: UiSelector
+      case 'flutter':
+        return `'~${el}'`; // Flutter: Semantics label
+      default:
+        return `'~${el}'`; // React Native: testID → accessibility id
+    }
   }
 
   private varName(el: string): string {

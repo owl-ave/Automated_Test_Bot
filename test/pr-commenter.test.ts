@@ -21,9 +21,11 @@ describe('PrCommenter', () => {
     repoOwner: 'testOrg',
     repoName: 'testRepo',
     branch: 'feature/test',
+    targetPath: '/tmp/test',
     diffFiles: [],
     testResults: results,
     logs: [],
+    moduleStatuses: [],
   });
 
   const passResult: TestResult = {
@@ -98,6 +100,43 @@ describe('PrCommenter', () => {
     expect(report).toContain('iPhone 15');
   });
 
+  it('includes test environment section with framework info', () => {
+    const ctx = makeContext([passResult]);
+    ctx.codeAnalysis = {
+      framework: 'swift',
+      screens: [],
+      apiEndpoints: [],
+      industry: 'banking',
+      criticalFlows: [],
+    };
+    ctx.appBuild = {
+      iosAppUrl: 'bs://abc123',
+      iosCustomId: 'ios-pr-42',
+      buildTimestamp: '2026-01-01T00:00:00Z',
+    };
+    const report = commenter.generateReport(ctx);
+    expect(report).toContain('Test Environment');
+    expect(report).toContain('iOS Native (Swift)');
+    expect(report).toContain('ios-pr-42');
+    expect(report).toContain('feature/test');
+  });
+
+  it('includes environment section even without codeAnalysis', () => {
+    const report = commenter.generateReport(makeContext([passResult]));
+    expect(report).toContain('Test Environment');
+    expect(report).toContain('unknown');
+  });
+
+  it('includes BrowserStack session link in failed tests', () => {
+    const failWithSession: TestResult = {
+      ...failResult,
+      sessionId: 'sess-abc123',
+    };
+    const report = commenter.generateReport(makeContext([failWithSession]));
+    expect(report).toContain('View on BrowserStack');
+    expect(report).toContain('sessions/sess-abc123');
+  });
+
   it('posts report to GitHub', async () => {
     await commenter.postReport('owner', 'repo', 1, 'test report');
     expect(mockGitHub.postComment).toHaveBeenCalledWith('owner', 'repo', 1, 'test report');
@@ -106,7 +145,43 @@ describe('PrCommenter', () => {
   it('handles empty test results', () => {
     const report = commenter.generateReport(makeContext([]));
     expect(report).toContain('## Automated Testing Bot Report');
-    expect(report).toContain('| Total Tests | 0 |');
+    expect(report).toContain('No tests were executed on real devices.');
+    expect(report).not.toContain('| Total Tests |');
+  });
+
+  it('includes video URL in failed test report', () => {
+    const failWithVideo: TestResult = {
+      ...failResult,
+      videoUrl: 'https://app-automate.browserstack.com/sessions/abc123/video',
+    };
+    const report = commenter.generateReport(makeContext([failWithVideo]));
+    expect(report).toContain('Watch Test Recording');
+    expect(report).toContain('https://app-automate.browserstack.com/sessions/abc123/video');
+  });
+
+  it('includes video URL in passing test report', () => {
+    const passWithVideo: TestResult = {
+      ...passResult,
+      videoUrl: 'https://app-automate.browserstack.com/sessions/def456/video',
+    };
+    const report = commenter.generateReport(makeContext([passWithVideo]));
+    expect(report).toContain('Watch');
+    expect(report).toContain('https://app-automate.browserstack.com/sessions/def456/video');
+  });
+
+  it('includes video URL in warnings section', () => {
+    const warnWithVideo: TestResult = {
+      ...warnResult,
+      videoUrl: 'https://app-automate.browserstack.com/sessions/ghi789/video',
+    };
+    const report = commenter.generateReport(makeContext([warnWithVideo]));
+    expect(report).toContain('Watch Video');
+    expect(report).toContain('https://app-automate.browserstack.com/sessions/ghi789/video');
+  });
+
+  it('shows dash when video URL is missing in passing tests table', () => {
+    const report = commenter.generateReport(makeContext([passResult]));
+    expect(report).toMatch(/\| Login test \| Pixel 8 \| [\d.]+s \| - \|/);
   });
 
   it('includes performance logs when present', () => {

@@ -27,7 +27,21 @@ export class ElementFinder {
     };
   }
 
-  generateLocatorStrategy(element: Element): string {
+  generateLocatorStrategy(element: Element, framework?: string): string {
+    if (framework === 'swift') {
+      // iOS: accessibility identifier → label → name → xpath
+      if (element.accessibilityId) return `$('~${element.accessibilityId}')`;
+      if (element.text) return `$('-ios predicate string:label == "${element.text}"')`;
+      return `$('~${element.id}')`;
+    }
+    if (framework === 'kotlin') {
+      // Android: resource-id → content-desc → text → xpath
+      if (element.resourceId) return `$('android=new UiSelector().resourceId("${element.resourceId}")')`;
+      if (element.accessibilityId) return `$('~${element.accessibilityId}')`;
+      if (element.text) return `$('//*[@text="${element.text}"]')`;
+      return `$('~${element.id}')`;
+    }
+    // React Native / Flutter / generic: accessibility id → resource id → text
     if (element.accessibilityId) return `$('~${element.accessibilityId}')`;
     if (element.resourceId) return `$('id=${element.resourceId}')`;
     if (element.text) return `$('//*[@text="${element.text}"]')`;

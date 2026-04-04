@@ -6,8 +6,14 @@ const MANAGED_LABELS = [
   'tests-passed',
   'tests-failed',
   'tests-warning',
+  'android-tests-failed',
+  'ios-tests-failed',
   'accessibility-issues',
   'performance-regression',
+  'framework:react-native',
+  'framework:flutter',
+  'framework:swift',
+  'framework:kotlin',
 ] as const;
 
 type ManagedLabel = (typeof MANAGED_LABELS)[number];
@@ -25,7 +31,7 @@ export class LabelManager {
     repo: string,
     prNumber: number,
     testResults: TestResult[],
-    extra?: { accessibilityIssues?: boolean; performanceRegression?: boolean },
+    extra?: { accessibilityIssues?: boolean; performanceRegression?: boolean; framework?: string },
   ): Promise<string[]> {
     const labelsToAdd = this.determineLabels(testResults, extra);
 
@@ -54,7 +60,7 @@ export class LabelManager {
 
   private determineLabels(
     results: TestResult[],
-    extra?: { accessibilityIssues?: boolean; performanceRegression?: boolean },
+    extra?: { accessibilityIssues?: boolean; performanceRegression?: boolean; framework?: string },
   ): string[] {
     const labels: ManagedLabel[] = [];
     const hasFail = results.some((r) => r.status === 'fail');
@@ -67,6 +73,19 @@ export class LabelManager {
     } else if (results.length > 0) {
       labels.push('tests-passed');
     }
+
+    // Platform-specific failure labels
+    const androidFails = results.filter((r) => r.status === 'fail' && r.device.toLowerCase().match(/pixel|samsung|oneplus|galaxy|android/));
+    const iosFails = results.filter((r) => r.status === 'fail' && r.device.toLowerCase().match(/iphone|ipad|ios/));
+    if (androidFails.length > 0) labels.push('android-tests-failed');
+    if (iosFails.length > 0) labels.push('ios-tests-failed');
+
+    // Framework label
+    const fw = extra?.framework;
+    if (fw === 'react-native') labels.push('framework:react-native');
+    else if (fw === 'flutter') labels.push('framework:flutter');
+    else if (fw === 'swift') labels.push('framework:swift');
+    else if (fw === 'kotlin') labels.push('framework:kotlin');
 
     if (extra?.accessibilityIssues) {
       labels.push('accessibility-issues');
