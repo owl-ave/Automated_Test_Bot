@@ -63,16 +63,33 @@ export class IosBuilder {
       const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
       const schemeName = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
 
+      const derivedDataPath = path.join(this.rootPath, 'build', 'DerivedData');
       execSync(
-        `xcodebuild ${workspaceArg} -scheme ${schemeName} -configuration Release -derivedDataPath build -sdk iphoneos`,
+        `xcodebuild ${workspaceArg} -scheme "${schemeName}" ` +
+        `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
+        `-destination "generic/platform=iOS" ` +
+        `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
+        `build`,
         {
           cwd: this.rootPath,
           stdio: 'inherit',
+          timeout: 600000,
         },
       );
 
-      const ipaPath = this.findIpa();
-      if (!ipaPath) throw new Error('IPA not found after build');
+      // Package .app into .ipa
+      const appPath = this.findApp(derivedDataPath);
+      if (!appPath) throw new Error('.app not found after build');
+
+      const ipaDir = path.join(this.rootPath, 'build', 'ipa');
+      const payloadDir = path.join(ipaDir, 'Payload');
+      fs.mkdirSync(payloadDir, { recursive: true });
+      execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
+      const appName = path.basename(appPath, '.app');
+      const ipaPath = path.join(ipaDir, `${appName}.ipa`);
+      execSync(`cd "${ipaDir}" && zip -r "${ipaPath}" Payload`, { stdio: 'inherit' });
+
+      if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
 
       this.logger.log('React Native IPA built', { ipaPath });
       return ipaPath;
@@ -105,35 +122,59 @@ export class IosBuilder {
     try {
       this.logger.log('Building native iOS app with xcodebuild');
 
-      // Find workspace or project file
       const workspaceFile = this.findWorkspaceOrProject();
       if (!workspaceFile) throw new Error('iOS workspace or project not found');
 
       const isWorkspace = workspaceFile.endsWith('.xcworkspace');
       const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
-
-      // Get scheme (usually same as project name)
       const schemeName = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
 
+      // List available schemes so we can fall back if the guessed name is wrong
+      const schemesOutput = execSync(
+        `xcodebuild ${workspaceArg} -list -json`,
+        { cwd: this.rootPath, encoding: 'utf-8', timeout: 30000 },
+      );
+      let resolvedScheme = schemeName;
+      try {
+        const info = JSON.parse(schemesOutput);
+        const schemes: string[] = info.workspace?.schemes ?? info.project?.schemes ?? [];
+        this.logger.log('Available schemes', { schemes });
+        if (schemes.length && !schemes.includes(schemeName)) {
+          resolvedScheme = schemes[0];
+          this.logger.log(`Scheme "${schemeName}" not found, using "${resolvedScheme}"`);
+        }
+      } catch { /* keep guessed scheme */ }
+
+      // Build .app for generic iOS device (no code signing required)
+      const derivedDataPath = path.join(this.rootPath, 'build', 'DerivedData');
       execSync(
-        `xcodebuild ${workspaceArg} -scheme ${schemeName} -configuration Release -derivedDataPath build archive -archivePath build/archive.xcarchive`,
+        `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" ` +
+        `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
+        `-destination "generic/platform=iOS" ` +
+        `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
+        `build`,
         {
           cwd: this.rootPath,
           stdio: 'inherit',
+          timeout: 600000,
         },
       );
 
-      // Export IPA from archive
-      execSync(
-        'xcodebuild -exportArchive -archivePath build/archive.xcarchive -exportOptionsPlist build/ExportOptions.plist -exportPath build/ipa',
-        {
-          cwd: this.rootPath,
-          stdio: 'inherit',
-        },
-      );
+      // Find the .app and package it into an .ipa
+      const appPath = this.findApp(derivedDataPath);
+      if (!appPath) throw new Error('.app not found after xcodebuild');
 
-      const ipaPath = this.findIpa();
-      if (!ipaPath) throw new Error('IPA not found after xcodebuild');
+      const ipaDir = path.join(this.rootPath, 'build', 'ipa');
+      const payloadDir = path.join(ipaDir, 'Payload');
+      fs.mkdirSync(payloadDir, { recursive: true });
+
+      // Copy .app into Payload/ and zip as .ipa
+      execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
+      const appName = path.basename(appPath, '.app');
+      const ipaPath = path.join(ipaDir, `${appName}.ipa`);
+      execSync(`cd "${ipaDir}" && zip -r "${ipaPath}" Payload`, { stdio: 'inherit' });
+
+      if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
 
       this.logger.log('Native iOS IPA built', { ipaPath });
       return ipaPath;
@@ -154,6 +195,20 @@ export class IosBuilder {
     const project = files.find((f) => f.endsWith('.xcodeproj'));
     if (project) return path.join(this.rootPath, project);
 
+    return null;
+  }
+
+  private findApp(derivedDataPath: string): string | null {
+    const productsDir = path.join(derivedDataPath, 'Build', 'Products');
+    if (!fs.existsSync(productsDir)) return null;
+
+    for (const config of fs.readdirSync(productsDir)) {
+      const configDir = path.join(productsDir, config);
+      if (!fs.statSync(configDir).isDirectory()) continue;
+      const entries = fs.readdirSync(configDir);
+      const app = entries.find((f) => f.endsWith('.app'));
+      if (app) return path.join(configDir, app);
+    }
     return null;
   }
 

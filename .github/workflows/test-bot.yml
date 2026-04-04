@@ -235,12 +235,23 @@ jobs:
             bot/test-results/
           retention-days: 30
 
-      # ── 9. Comment on target repo PR ──
+      # ── 9. Refresh token (original may have expired after 1h+ pipeline) ──
+      - name: Refresh GitHub App Token
+        if: always()
+        id: refresh-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ needs.detect.outputs.owner }}
+          repositories: ${{ needs.detect.outputs.repo }}
+
+      # ── 10. Comment on target repo PR ──
       - name: Comment on PR with results
         if: always()
         uses: actions/github-script@v7
         with:
-          github-token: ${{ steps.generate-token.outputs.token }}
+          github-token: ${{ steps.refresh-token.outputs.token }}
           script: |
             const fs = require('fs');
             const prNumber = parseInt('${{ github.event.inputs.pr_number }}') || 0;
@@ -259,7 +270,7 @@ jobs:
         if: failure()
         uses: actions/github-script@v7
         with:
-          github-token: ${{ steps.generate-token.outputs.token }}
+          github-token: ${{ steps.refresh-token.outputs.token }}
           script: |
             const prNumber = parseInt('${{ github.event.inputs.pr_number }}') || 0;
             if (!prNumber) { console.log('No PR number, skipping comment'); return; }

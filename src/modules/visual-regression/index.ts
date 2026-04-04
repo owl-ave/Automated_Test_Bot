@@ -56,6 +56,16 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
     const androidDriver = (context as any).androidDriver;
     const iosDriver = (context as any).iosDriver;
 
+    if (!androidDriver && !iosDriver) {
+      logger.warn('No drivers available — skipping visual regression (requires real device sessions)');
+      return {
+        moduleName: 'visual-regression',
+        status: 'warning',
+        data: emptyResult(),
+        error: 'No drivers available',
+      };
+    }
+
     if (androidDriver) {
       for (const screen of screenNames) {
         try {
@@ -118,9 +128,16 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
     // Finalize Percy build and get comparisons
     await percy.finalizeBuild();
 
-    for (const key of allScreenshotKeys) {
-      const result = await percy.compareWithBaseline(key);
-      comparisons.push(result);
+    // Only poll Percy if we actually captured screenshots
+    if (allScreenshotKeys.length > 0) {
+      // Wait for build once, then fetch all comparisons
+      const build = await percy.waitForBuildOnce();
+      if (build) {
+        for (const key of allScreenshotKeys) {
+          const result = await percy.compareWithBaseline(key);
+          comparisons.push(result);
+        }
+      }
     }
 
     // Get Percy build URL

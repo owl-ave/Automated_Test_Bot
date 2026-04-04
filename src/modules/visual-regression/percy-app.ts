@@ -20,6 +20,7 @@ export class PercyAppIntegration {
   private baseUrl = 'https://percy.io/api/v1';
   private buildId: string | null = null;
   private snapshots: Map<string, string> = new Map();
+  private cachedComparisons: any[] | null = null;
 
   constructor(percyToken?: string) {
     this.token = percyToken || process.env.PERCY_TOKEN || '';
@@ -149,19 +150,15 @@ export class PercyAppIntegration {
     }
 
     try {
-      // Poll build until processing is complete
-      const build = await this.waitForBuild();
-      if (!build) {
-        return { name: screenshotName, diffPercent: 0, status: 'new' };
+      // Fetch comparisons (caller should have already waited for build via waitForBuildOnce)
+      if (!this.cachedComparisons) {
+        const response = await axios.get(`${this.baseUrl}/builds/${this.buildId}/comparisons`, {
+          headers: this.getHeaders(),
+        });
+        this.cachedComparisons = response.data.data || [];
       }
 
-      // Get snapshot comparisons
-      const response = await axios.get(`${this.baseUrl}/builds/${this.buildId}/comparisons`, {
-        headers: this.getHeaders(),
-      });
-
-      const comparisons = response.data.data || [];
-      const match = comparisons.find((c: any) => c.attributes?.['head-snapshot-name'] === screenshotName);
+      const match = this.cachedComparisons.find((c: any) => c.attributes?.['head-snapshot-name'] === screenshotName);
 
       if (!match) {
         return { name: screenshotName, diffPercent: 0, status: 'new' };
@@ -182,7 +179,7 @@ export class PercyAppIntegration {
     }
   }
 
-  private async waitForBuild(maxWaitMs = 120000): Promise<PercyBuild | null> {
+  async waitForBuildOnce(maxWaitMs = 120000): Promise<PercyBuild | null> {
     const start = Date.now();
     const pollInterval = 5000;
 
