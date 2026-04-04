@@ -39,37 +39,37 @@ export const DEVICE_MATRIX: Device[] = [
     browserstack_device_name: 'Samsung Galaxy Tab S9',
   },
 
-  // iOS — flagship (Dynamic Island)
+  // iOS — latest (iOS 26)
+  {
+    name: 'iPhone 17 Pro',
+    platform: 'iOS',
+    os_version: '26',
+    device: 'iPhone 17 Pro',
+    browserstack_device_name: 'iPhone 17 Pro',
+  },
+  // iOS — flagship
+  {
+    name: 'iPhone 16 Pro',
+    platform: 'iOS',
+    os_version: '26',
+    device: 'iPhone 16 Pro',
+    browserstack_device_name: 'iPhone 16 Pro',
+  },
+  // iOS — older flagship (backwards compat)
   {
     name: 'iPhone 15 Pro',
     platform: 'iOS',
-    os_version: '17',
+    os_version: '26',
     device: 'iPhone 15 Pro',
     browserstack_device_name: 'iPhone 15 Pro',
   },
-  // iOS — older device + older OS
-  {
-    name: 'iPhone 13',
-    platform: 'iOS',
-    os_version: '16',
-    device: 'iPhone 13',
-    browserstack_device_name: 'iPhone 13',
-  },
-  // iOS — small screen (SE form factor)
-  {
-    name: 'iPhone SE 2022',
-    platform: 'iOS',
-    os_version: '16',
-    device: 'iPhone SE 2022',
-    browserstack_device_name: 'iPhone SE 2022',
-  },
   // iOS — tablet
   {
-    name: 'iPad Air',
+    name: 'iPad Air M3',
     platform: 'iOS',
-    os_version: '17',
-    device: 'iPad Air',
-    browserstack_device_name: 'iPad Air',
+    os_version: '26',
+    device: 'iPad Air M3',
+    browserstack_device_name: 'iPad Air M3',
   },
 ];
 

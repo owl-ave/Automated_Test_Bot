@@ -43,6 +43,8 @@ export interface CodeAnalysis {
   apiEndpoints: ApiEndpoint[];
   industry: string;
   criticalFlows: Flow[];
+  minIosVersion?: string;
+  minAndroidVersion?: string;
 }
 
 export interface Screen {

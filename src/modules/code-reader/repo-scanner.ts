@@ -27,6 +27,10 @@ export class RepoScanner {
       endpointCount: apiEndpoints.length,
     });
 
+    // Detect minimum OS versions from project files
+    const minIosVersion = this.detectMinIosVersion(mobilePath);
+    const minAndroidVersion = this.detectMinAndroidVersion(mobilePath);
+
     return {
       framework,
       screens,
@@ -34,6 +38,8 @@ export class RepoScanner {
       industry: 'unknown',
       criticalFlows: [],
       mobilePath,
+      minIosVersion,
+      minAndroidVersion,
     };
   }
 
@@ -168,6 +174,32 @@ export class RepoScanner {
       // ignore
     }
     return files;
+  }
+
+  private detectMinIosVersion(mobilePath: string): string | undefined {
+    // Check pbxproj for IPHONEOS_DEPLOYMENT_TARGET
+    const pbxproj = this.findInTree('project\\.pbxproj$', mobilePath);
+    if (pbxproj) {
+      try {
+        const content = fs.readFileSync(pbxproj, 'utf-8');
+        const match = content.match(/IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([\d.]+)/);
+        if (match) return match[1];
+      } catch { /* ignore */ }
+    }
+    return undefined;
+  }
+
+  private detectMinAndroidVersion(mobilePath: string): string | undefined {
+    // Check build.gradle for minSdkVersion
+    const gradle = this.findInTree('build\\.gradle(\\.kts)?$', mobilePath);
+    if (gradle) {
+      try {
+        const content = fs.readFileSync(gradle, 'utf-8');
+        const match = content.match(/minSdk(?:Version)?\s*[=:]\s*(\d+)/);
+        if (match) return match[1];
+      } catch { /* ignore */ }
+    }
+    return undefined;
   }
 
   private findInTree(pattern: string, dir: string): string | null {

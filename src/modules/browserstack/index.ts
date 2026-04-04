@@ -58,8 +58,16 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
       allResults.push(...androidResults);
     }
 
-    // Run on iOS devices
-    const iosDevices = devices.filter((d) => d.platform === 'iOS');
+    // Run on iOS devices — filter to devices that meet the app's minimum OS version
+    const minIosVersion = context.codeAnalysis?.minIosVersion;
+    const iosDevices = devices.filter((d) => {
+      if (d.platform !== 'iOS') return false;
+      if (minIosVersion && parseFloat(d.os_version) < parseFloat(minIosVersion)) {
+        logger.warn(`Skipping ${d.name} (iOS ${d.os_version}) — app requires iOS ${minIosVersion}+`);
+        return false;
+      }
+      return true;
+    });
     if (iosAppUrl && iosDevices.length > 0) {
       logger.log('Running iOS tests', { devices: iosDevices.length, scenarios: scenarios.length });
       const iosResults = await executor.executeTests(iosAppUrl, scenarios, iosDevices);
