@@ -101,7 +101,7 @@ jobs:
   # ── Main pipeline — uses macOS for iOS, ubuntu for Android-only ──
   test-bot:
     needs: detect
-    runs-on: ${{ needs.detect.outputs.needs_ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
+    runs-on: ${{ needs.detect.outputs.needs_ios == 'true' && 'macos-26' || 'ubuntu-latest' }}
     timeout-minutes: 120
 
     steps:
@@ -145,17 +145,6 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-
-      - name: Select latest Xcode version (for iOS builds)
-        if: needs.detect.outputs.needs_ios == 'true'
-        run: |
-          # Find the latest Xcode installed on the runner
-          LATEST_XCODE=$(ls -d /Applications/Xcode*.app 2>/dev/null | sort -V | tail -1)
-          if [ -n "$LATEST_XCODE" ]; then
-            echo "Selecting Xcode: $LATEST_XCODE"
-            sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
-          fi
-          xcodebuild -version
 
       - name: Setup Ruby (for CocoaPods)
         if: hashFiles('target/Podfile') != '' || hashFiles('target/ios/Podfile') != ''

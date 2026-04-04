@@ -90,6 +90,13 @@ export class FlowMapper {
         changedScreenNames.some((cs) => s.toLowerCase().includes(cs.toLowerCase())),
       );
     });
-    return flows.filter((f) => f.affectedByPr);
+    const affected = flows.filter((f) => f.affectedByPr);
+    if (affected.length > 0) return affected;
+
+    // If no flows matched changed files, return critical/high priority flows as fallback
+    // so ScenarioBrain still has something to generate tests for
+    this.logger.warn('No flows matched changed screens, falling back to high-priority flows');
+    const fallback = flows.filter((f) => f.priority === 'critical' || f.priority === 'high');
+    return fallback.length > 0 ? fallback : flows;
   }
 }

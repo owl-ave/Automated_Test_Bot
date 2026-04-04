@@ -36,7 +36,9 @@ export class FeatureGenerator {
 
   private parseFeatures(response: string, flowName: string): BddScenario[] {
     const scenarios: BddScenario[] = [];
-    const lines = response.split('\n');
+    // Strip markdown code fences — Claude often wraps Gherkin in ```gherkin ... ```
+    const cleaned = response.replace(/```(?:gherkin|feature|cucumber)?\n?/gi, '');
+    const lines = cleaned.split('\n');
     let currentScenario: { scenario: string; steps: any[] } | null = null;
 
     for (const line of lines) {

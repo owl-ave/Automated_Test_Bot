@@ -1,3 +1,12 @@
+function serializeSafe(value: unknown): unknown {
+  if (value === undefined || value === null) return value;
+  if (value instanceof Error) return { message: value.message, stack: value.stack?.split('\n').slice(0, 3).join('\n') };
+  if (typeof value === 'object') {
+    try { JSON.stringify(value); return value; } catch { return String(value); }
+  }
+  return value;
+}
+
 export class Logger {
   private context: string;
 
@@ -18,14 +27,14 @@ export class Logger {
         level: 'ERROR',
         context: this.context,
         msg,
-        error: String(error),
+        error: serializeSafe(error),
       }),
     );
   }
 
   warn(msg: string, data?: unknown): void {
     console.warn(
-      JSON.stringify({ timestamp: new Date().toISOString(), level: 'WARN', context: this.context, msg, data }),
+      JSON.stringify({ timestamp: new Date().toISOString(), level: 'WARN', context: this.context, msg, data: serializeSafe(data) }),
     );
   }
 
