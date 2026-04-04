@@ -94,7 +94,6 @@ export class TestExecutor {
       'bstack:options': {
         userName: this.config.username,
         accessKey: this.config.accessKey,
-        appiumVersion: '2.0',
         projectName: 'AutomatedTestingBot',
         buildName: `PR-${Date.now()}`,
         sessionName: `${device.name} Test Run`,
