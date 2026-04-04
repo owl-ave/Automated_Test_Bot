@@ -123,19 +123,33 @@ export class IosBuilder {
       this.logger.log('Building native iOS app with xcodebuild');
 
       const workspaceFile = this.findWorkspaceOrProject();
-      if (!workspaceFile) throw new Error('iOS workspace or project not found');
+      if (!workspaceFile) throw new Error('iOS workspace or project not found — searched root and subdirectories');
 
+      const projectDir = path.dirname(workspaceFile);
       const isWorkspace = workspaceFile.endsWith('.xcworkspace');
-      const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
+      const workspaceArg = isWorkspace ? `-workspace "${workspaceFile}"` : `-project "${workspaceFile}"`;
       const schemeName = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
 
-      // List available schemes so we can fall back if the guessed name is wrong
-      const schemesOutput = execSync(
-        `xcodebuild ${workspaceArg} -list -json`,
-        { cwd: this.rootPath, encoding: 'utf-8', timeout: 30000 },
-      );
+      this.logger.log('Found Xcode project', { workspaceFile, projectDir, schemeName });
+
+      // Install CocoaPods if Podfile exists
+      const podfilePath = fs.existsSync(path.join(projectDir, 'Podfile'))
+        ? projectDir
+        : fs.existsSync(path.join(this.rootPath, 'Podfile'))
+          ? this.rootPath
+          : null;
+      if (podfilePath && !fs.existsSync(path.join(podfilePath, 'Pods'))) {
+        this.logger.log('Installing CocoaPods dependencies');
+        this.exec(`pod install --repo-update`, podfilePath);
+      }
+
+      // List available schemes
       let resolvedScheme = schemeName;
       try {
+        const schemesOutput = execSync(
+          `xcodebuild ${workspaceArg} -list -json`,
+          { cwd: projectDir, encoding: 'utf-8', timeout: 30000 },
+        );
         const info = JSON.parse(schemesOutput);
         const schemes: string[] = info.workspace?.schemes ?? info.project?.schemes ?? [];
         this.logger.log('Available schemes', { schemes });
@@ -143,32 +157,42 @@ export class IosBuilder {
           resolvedScheme = schemes[0];
           this.logger.log(`Scheme "${schemeName}" not found, using "${resolvedScheme}"`);
         }
-      } catch { /* keep guessed scheme */ }
+      } catch (e) {
+        this.logger.warn('Could not list schemes, using guessed name', e);
+      }
 
-      // Build .app for generic iOS device (no code signing required)
-      const derivedDataPath = path.join(this.rootPath, 'build', 'DerivedData');
-      execSync(
+      // Resolve Swift Package Manager dependencies
+      this.logger.log('Resolving package dependencies');
+      try {
+        this.exec(
+          `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" -resolvePackageDependencies`,
+          projectDir,
+        );
+      } catch {
+        this.logger.warn('SPM resolve failed — continuing (may not use SPM)');
+      }
+
+      // Build .app (no code signing required for BrowserStack)
+      const derivedDataPath = path.join(projectDir, 'build', 'DerivedData');
+      this.logger.log('Starting xcodebuild', { scheme: resolvedScheme, derivedDataPath });
+      this.exec(
         `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" ` +
         `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
-        `-destination "generic/platform=iOS" ` +
+        `-destination "generic/platform=iOS Simulator" ` +
         `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
+        `ONLY_ACTIVE_ARCH=NO ` +
         `build`,
-        {
-          cwd: this.rootPath,
-          stdio: 'inherit',
-          timeout: 600000,
-        },
+        projectDir,
+        600000,
       );
 
-      // Find the .app and package it into an .ipa
+      // Find .app and package into .ipa
       const appPath = this.findApp(derivedDataPath);
-      if (!appPath) throw new Error('.app not found after xcodebuild');
+      if (!appPath) throw new Error('.app not found after xcodebuild — check build output above');
 
-      const ipaDir = path.join(this.rootPath, 'build', 'ipa');
+      const ipaDir = path.join(projectDir, 'build', 'ipa');
       const payloadDir = path.join(ipaDir, 'Payload');
       fs.mkdirSync(payloadDir, { recursive: true });
-
-      // Copy .app into Payload/ and zip as .ipa
       execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
       const appName = path.basename(appPath, '.app');
       const ipaPath = path.join(ipaDir, `${appName}.ipa`);
@@ -184,16 +208,46 @@ export class IosBuilder {
     }
   }
 
+  /** Run a command with output captured and logged on failure */
+  private exec(cmd: string, cwd: string, timeout = 120000): void {
+    try {
+      execSync(cmd, { cwd, stdio: 'inherit', timeout });
+    } catch (error: any) {
+      // If execSync failed, try to capture output for logging
+      try {
+        const output = execSync(cmd + ' 2>&1 || true', { cwd, encoding: 'utf-8', timeout: 10000 });
+        this.logger.error('Command failed', { cmd: cmd.slice(0, 100), output: output.slice(-2000) });
+      } catch { /* ignore */ }
+      throw error;
+    }
+  }
+
   private findWorkspaceOrProject(): string | null {
-    const files = fs.readdirSync(this.rootPath);
+    // Search root first
+    const rootMatch = this.findXcodeFiles(this.rootPath);
+    if (rootMatch) return rootMatch;
 
-    // Prefer workspace
+    // Search one level deep
+    const entries = fs.readdirSync(this.rootPath, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'build') continue;
+      const subMatch = this.findXcodeFiles(path.join(this.rootPath, entry.name));
+      if (subMatch) return subMatch;
+    }
+
+    return null;
+  }
+
+  private findXcodeFiles(dir: string): string | null {
+    if (!fs.existsSync(dir)) return null;
+    const files = fs.readdirSync(dir);
+
+    // Prefer workspace (usually has CocoaPods/SPM configured)
     const workspace = files.find((f) => f.endsWith('.xcworkspace'));
-    if (workspace) return path.join(this.rootPath, workspace);
+    if (workspace) return path.join(dir, workspace);
 
-    // Fall back to project
     const project = files.find((f) => f.endsWith('.xcodeproj'));
-    if (project) return path.join(this.rootPath, project);
+    if (project) return path.join(dir, project);
 
     return null;
   }
