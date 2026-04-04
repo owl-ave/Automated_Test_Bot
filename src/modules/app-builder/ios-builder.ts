@@ -93,8 +93,8 @@ export class IosBuilder {
 
       this.logger.log('React Native IPA built', { ipaPath });
       return ipaPath;
-    } catch (error) {
-      this.logger.error('React Native iOS build failed', error);
+    } catch (error: any) {
+      this.logger.error('React Native iOS build failed', { message: error?.message || String(error) });
       throw error;
     }
   }
@@ -112,8 +112,8 @@ export class IosBuilder {
 
       this.logger.log('Flutter IPA built', { ipaPath });
       return ipaPath;
-    } catch (error) {
-      this.logger.error('Flutter iOS build failed', error);
+    } catch (error: any) {
+      this.logger.error('Flutter iOS build failed', { message: error?.message || String(error) });
       throw error;
     }
   }
@@ -202,8 +202,8 @@ export class IosBuilder {
 
       this.logger.log('Native iOS IPA built', { ipaPath });
       return ipaPath;
-    } catch (error) {
-      this.logger.error('Native iOS build failed', error);
+    } catch (error: any) {
+      this.logger.error('Native iOS build failed', { message: error?.message || String(error) });
       throw error;
     }
   }
@@ -213,12 +213,9 @@ export class IosBuilder {
     try {
       execSync(cmd, { cwd, stdio: 'inherit', timeout });
     } catch (error: any) {
-      // If execSync failed, try to capture output for logging
-      try {
-        const output = execSync(cmd + ' 2>&1 || true', { cwd, encoding: 'utf-8', timeout: 10000 });
-        this.logger.error('Command failed', { cmd: cmd.slice(0, 100), output: output.slice(-2000) });
-      } catch { /* ignore */ }
-      throw error;
+      const msg = error?.stderr?.toString?.()?.slice(-2000) || error?.message || String(error);
+      this.logger.error('Command failed', { cmd: cmd.slice(0, 120), error: msg });
+      throw new Error(`Command failed: ${cmd.slice(0, 120)}\n${msg}`);
     }
   }
 
