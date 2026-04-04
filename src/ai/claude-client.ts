@@ -3,39 +3,42 @@ import { Logger } from '../utils/logger';
 
 const logger = new Logger('ClaudeClient');
 
-async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
+const QUERY_TIMEOUT_MS = 120_000; // 2 minutes per query
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Query timed out after ${ms}ms`)), ms);
+    promise.then(resolve, reject).finally(() => clearTimeout(timer));
+  });
+}
+
+async function executeQuery(prompt: string, maxTurns: number): Promise<string> {
   let result = '';
-  try {
-    for await (const message of query({
-      prompt,
-      options: {
-        maxTurns,
-        model: 'claude-sonnet-4-6',
-      },
-    })) {
-      if ('result' in message) {
-        result = message.result;
-      }
+  for await (const message of query({
+    prompt,
+    options: { maxTurns, model: 'claude-sonnet-4-6' },
+  })) {
+    if ('result' in message) {
+      result = message.result;
+      break;
     }
+  }
+  return result;
+}
+
+async function runQuery(prompt: string, maxTurns: number = 1): Promise<string> {
+  try {
+    return await withTimeout(executeQuery(prompt, maxTurns), QUERY_TIMEOUT_MS);
   } catch (error: any) {
     logger.error('Claude Agent SDK query failed', { message: error.message || String(error), code: error.code });
-    // Retry once
     try {
       logger.log('Retrying Claude query...');
-      for await (const message of query({
-        prompt,
-        options: { maxTurns, model: 'claude-sonnet-4-6' },
-      })) {
-        if ('result' in message) {
-          result = message.result;
-        }
-      }
+      return await withTimeout(executeQuery(prompt, maxTurns), QUERY_TIMEOUT_MS);
     } catch (retryError: any) {
       logger.error('Claude query retry also failed', { message: retryError.message || String(retryError), code: retryError.code });
       throw retryError;
     }
   }
-  return result;
 }
 
 export class ClaudeClient {

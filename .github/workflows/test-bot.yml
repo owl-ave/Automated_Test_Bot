@@ -19,18 +19,17 @@ env:
   NODE_ENV: production
 
 jobs:
-  test-bot:
+  # ── Detect target app platform ──
+  detect:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
+    timeout-minutes: 5
+    outputs:
+      owner: ${{ steps.parse-repo.outputs.owner }}
+      repo: ${{ steps.parse-repo.outputs.repo }}
+      framework: ${{ steps.detect-app.outputs.framework }}
+      needs_android: ${{ steps.detect-app.outputs.android }}
+      needs_ios: ${{ steps.detect-app.outputs.ios }}
     steps:
-      # ── 1. Checkout bot code (this repo) ──
-      - name: Checkout bot
-        uses: actions/checkout@v4
-        with:
-          path: bot
-
-      # ── 2. Parse target repo input ──
       - name: Parse repo input
         id: parse-repo
         run: |
@@ -38,7 +37,6 @@ jobs:
           echo "owner=$owner" >> "$GITHUB_OUTPUT"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
 
-      # ── 3. Generate token for target repo ──
       - name: Generate GitHub App Token
         id: generate-token
         uses: actions/create-github-app-token@v1
@@ -48,46 +46,16 @@ jobs:
           owner: ${{ steps.parse-repo.outputs.owner }}
           repositories: ${{ steps.parse-repo.outputs.repo }}
 
-      # ── 3. Checkout target repo ──
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.inputs.repo }}
           ref: ${{ github.event.inputs.branch }}
           token: ${{ steps.generate-token.outputs.token }}
-          fetch-depth: 0
+          fetch-depth: 1
           path: target
 
-      # ── 4. Setup environment ──
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-          cache-dependency-path: bot/package-lock.json
-
-      - name: Setup Java (for Android builds)
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Ruby (for CocoaPods)
-        if: hashFiles('target/Podfile') != '' || hashFiles('target/ios/Podfile') != ''
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.2'
-          bundler-cache: true
-
-      - name: Setup Flutter (if needed)
-        run: |
-          if [ -f "target/pubspec.yaml" ]; then
-            git clone --depth 1 --branch 3.24.0 https://github.com/flutter/flutter.git $HOME/flutter
-            export PATH="$HOME/flutter/bin:$PATH"
-            cd target && flutter pub get
-          fi
-
-      - name: Detect and prepare target app
+      - name: Detect target app platform
         id: detect-app
         run: |
           echo "android=false" >> "$GITHUB_OUTPUT"
@@ -129,6 +97,83 @@ jobs:
               echo "ios=true" >> "$GITHUB_OUTPUT"
             fi
           done
+
+  # ── Main pipeline — uses macOS for iOS, ubuntu for Android-only ──
+  test-bot:
+    needs: detect
+    runs-on: ${{ needs.detect.outputs.needs_ios == 'true' && 'macos-latest' || 'ubuntu-latest' }}
+    timeout-minutes: 120
+
+    steps:
+      # ── 1. Checkout bot code (this repo) ──
+      - name: Checkout bot
+        uses: actions/checkout@v4
+        with:
+          path: bot
+
+      # ── 2. Generate token for target repo ──
+      - name: Generate GitHub App Token
+        id: generate-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ needs.detect.outputs.owner }}
+          repositories: ${{ needs.detect.outputs.repo }}
+
+      # ── 3. Checkout target repo ──
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.inputs.repo }}
+          ref: ${{ github.event.inputs.branch }}
+          token: ${{ steps.generate-token.outputs.token }}
+          fetch-depth: 0
+          path: target
+
+      # ── 4. Setup environment ──
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: bot/package-lock.json
+
+      - name: Setup Java (for Android builds)
+        if: needs.detect.outputs.needs_android == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Select Xcode version (for iOS builds)
+        if: needs.detect.outputs.needs_ios == 'true'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+
+      - name: Setup Ruby (for CocoaPods)
+        if: hashFiles('target/Podfile') != '' || hashFiles('target/ios/Podfile') != ''
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Install CocoaPods
+        if: needs.detect.outputs.needs_ios == 'true'
+        run: |
+          PODFILE=""
+          [ -f "target/Podfile" ] && PODFILE="target"
+          [ -f "target/ios/Podfile" ] && PODFILE="target/ios"
+          if [ -n "$PODFILE" ]; then
+            cd "$PODFILE" && pod install
+          fi
+
+      - name: Setup Flutter (if needed)
+        run: |
+          if [ -f "target/pubspec.yaml" ]; then
+            git clone --depth 1 --branch 3.24.0 https://github.com/flutter/flutter.git $HOME/flutter
+            export PATH="$HOME/flutter/bin:$PATH"
+            cd target && flutter pub get
+          fi
 
       # ── 5. Install & build bot ──
       - name: Install bot dependencies
@@ -179,7 +224,7 @@ jobs:
           PERCY_TOKEN: ${{ secrets.PERCY_TOKEN }}
           MOBSF_API_KEY: ${{ secrets.MOBSF_API_KEY }}
 
-      # ── 7. Upload artifacts ──
+      # ── 8. Upload artifacts ──
       - name: Upload test artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -190,7 +235,7 @@ jobs:
             bot/test-results/
           retention-days: 30
 
-      # ── 8. Comment on target repo PR ──
+      # ── 9. Comment on target repo PR ──
       - name: Comment on PR with results
         if: always()
         uses: actions/github-script@v7
