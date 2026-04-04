@@ -158,7 +158,7 @@ export class PercyAppIntegration {
         this.cachedComparisons = response.data.data || [];
       }
 
-      const match = this.cachedComparisons.find((c: any) => c.attributes?.['head-snapshot-name'] === screenshotName);
+      const match = this.cachedComparisons!.find((c: any) => c.attributes?.['head-snapshot-name'] === screenshotName);
 
       if (!match) {
         return { name: screenshotName, diffPercent: 0, status: 'new' };
