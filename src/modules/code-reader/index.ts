@@ -1,7 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync } from 'child_process';
-import { PipelineContext, ModuleResult } from '../../types';
+import { PipelineContext, ModuleResult, AuthConfig } from '../../types';
 import { DiffParser } from './diff-parser';
 import { RepoScanner } from './repo-scanner';
 import { Logger } from '../../utils/logger';
@@ -90,6 +90,33 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
     context.diffFiles = diffFiles;
     context.codeAnalysis = codeAnalysis;
     context.mobilePath = codeAnalysis.mobilePath;
+
+    // Read bot-test-config.json from the checked-out repo root
+    const botConfigPath = path.join(repoPath, 'bot-test-config.json');
+    if (fs.existsSync(botConfigPath)) {
+      try {
+        const raw = fs.readFileSync(botConfigPath, 'utf-8');
+        const parsed = JSON.parse(raw);
+        const auth = parsed?.auth;
+        const validTypes: AuthConfig['type'][] = ['email_password', 'phone_otp', 'username_password', 'guest', 'none'];
+        if (auth && typeof auth.type === 'string' && validTypes.includes(auth.type)) {
+          context.authConfig = {
+            type: auth.type,
+            ...(auth.email    && { email: String(auth.email) }),
+            ...(auth.password && { password: String(auth.password) }),
+            ...(auth.phone    && { phone: String(auth.phone) }),
+            ...(auth.username && { username: String(auth.username) }),
+          };
+          logger.log('Auth config loaded', { type: auth.type }); // never log values
+        } else {
+          logger.warn('bot-test-config.json found but auth.type missing or invalid', { found: auth?.type ?? 'undefined' });
+        }
+      } catch (err) {
+        logger.warn('Failed to parse bot-test-config.json — auth tests will be skipped', err);
+      }
+    } else {
+      logger.log('No bot-test-config.json found — auth tests will be skipped');
+    }
 
     logger.log('Code reading complete', { repoPath, filesChanged: diffFiles.length, framework: codeAnalysis.framework, screens: codeAnalysis.screens.length });
 

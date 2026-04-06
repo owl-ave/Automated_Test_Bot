@@ -1,4 +1,4 @@
-import { BddScenario, Flow } from '../../types';
+import { BddScenario, Flow, Screen } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
 import { getFeatureGenerationPrompt } from '../../ai/prompts/feature-generation';
 import { Logger } from '../../utils/logger';
@@ -11,12 +11,17 @@ export class FeatureGenerator {
     this.claudeClient = new ClaudeClient();
   }
 
-  async generateFeatures(industry: string, flows: Flow[], framework?: string): Promise<BddScenario[]> {
+  async generateFeatures(industry: string, flows: Flow[], framework?: string, allScreens?: Screen[]): Promise<BddScenario[]> {
     const scenarios: BddScenario[] = [];
 
     for (const flow of flows) {
       try {
-        const prompt = getFeatureGenerationPrompt(industry, flow.name, flow.screens, framework);
+        // Look up full Screen objects (with elements) for screens in this flow
+        const flowScreenObjects = allScreens
+          ? flow.screens.map((name) => allScreens.find((s) => s.name === name)).filter(Boolean) as Screen[]
+          : [];
+
+        const prompt = getFeatureGenerationPrompt(industry, flow.name, flow.screens, framework, flowScreenObjects);
         const response = await this.claudeClient.analyzeCode('', prompt);
 
         const parsed = this.parseFeatures(response, flow.name);

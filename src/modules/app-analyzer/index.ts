@@ -15,7 +15,7 @@ export async function runAppAnalyzer(context: PipelineContext): Promise<ModuleRe
     context.codeAnalysis.industry = await industryDetector.detect(context.codeAnalysis);
 
     const flowMapper = new FlowMapper();
-    context.codeAnalysis.criticalFlows = flowMapper.mapFlows(
+    context.codeAnalysis.criticalFlows = await flowMapper.mapFlows(
       context.codeAnalysis.screens,
       context.codeAnalysis.apiEndpoints,
     );

@@ -14,7 +14,11 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
 
   try {
     const stepGen = new StepGenerator();
-    const appiumCode = stepGen.generateAppiumSteps(context.scenariosBdd, context.codeAnalysis.framework);
+    const appiumCode = stepGen.generateAppiumSteps(
+      context.scenariosBdd,
+      context.codeAnalysis.framework,
+      context.authConfig,
+    );
 
     const outputDir = path.join(process.cwd(), 'step-definitions');
     if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });

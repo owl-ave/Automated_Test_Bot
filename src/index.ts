@@ -9,6 +9,18 @@ dotenv.config();
 const logger = new Logger('Pipeline');
 const retryConfig = getThresholds().retry;
 
+// Removes base64 screenshot blobs from log data to keep logs readable
+function stripScreenshots(data: unknown): unknown {
+  if (!data || typeof data !== 'object') return data;
+  if (Array.isArray(data)) return data.map(stripScreenshots);
+  const obj = data as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    result[k] = k === 'screenshot' && typeof v === 'string' ? `[screenshot: ${Math.round(v.length / 1024)}KB]` : stripScreenshots(v);
+  }
+  return result;
+}
+
 // --- Orchestrator Resilience Utilities --- //
 
 async function runWithRetry(
@@ -58,7 +70,7 @@ async function executeStep(
 
   if (result.status === 'success' || result.status === 'warning') {
     context.moduleStatuses.push({ name: moduleName, status: result.status, durationMs, error: result.error });
-    logger.log(`${moduleName} completed safely`, result.data || 'Success without data');
+    logger.log(`${moduleName} completed safely`, stripScreenshots(result.data) || 'Success without data');
     return true;
   }
 

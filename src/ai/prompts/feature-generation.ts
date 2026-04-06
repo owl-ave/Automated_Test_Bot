@@ -13,13 +13,25 @@ function getElementIdGuidance(framework?: string): string {
   }
 }
 
-export function getFeatureGenerationPrompt(industry: string, flowName: string, screenNames: string[], framework?: string): string {
+export function getFeatureGenerationPrompt(industry: string, flowName: string, screenNames: string[], framework?: string, screens?: { name: string; elements: { id: string; type: string; text?: string }[] }[]): string {
   const platformLabel = framework && framework !== 'native' ? ` (${framework})` : '';
+
+  // Build screen context with actual element IDs extracted from code
+  const screenContext = screenNames.map((name) => {
+    const screen = screens?.find((s) => s.name === name);
+    if (!screen || screen.elements.length === 0) return `- ${name} (no elements extracted)`;
+    const elemList = screen.elements.slice(0, 15).map((e) => `    • "${e.id}" (${e.type}${e.text ? `, text: "${e.text}"` : ''})`).join('\n');
+    return `- ${name}:\n${elemList}`;
+  }).join('\n');
+
   return `Act as an expert Mobile QA Automation Engineer specializing in Appium and BDD Gherkin.
 You are writing test scenarios for a ${industry}${platformLabel} mobile app.
 
 Flow: ${flowName}
 Screens Involved: ${screenNames.join(' → ')}
+
+## Actual UI Elements Found in Code (use THESE exact IDs — do not invent new ones)
+${screenContext}
 
 ## Output Requirements
 Generate realistic scenarios using strict Appium Gherkin mapping:

@@ -1,12 +1,14 @@
-import { BddScenario, GherkinStep } from '../../types';
+import { BddScenario, GherkinStep, AuthConfig } from '../../types';
 import { Logger } from '../../utils/logger';
 
 export class StepGenerator {
   private logger = new Logger('StepGenerator');
   private framework: string = 'react-native';
+  private authConfig?: AuthConfig;
 
-  generateAppiumSteps(scenarios: BddScenario[], framework?: string): string {
+  generateAppiumSteps(scenarios: BddScenario[], framework?: string, authConfig?: AuthConfig): string {
     this.framework = framework || 'react-native';
+    this.authConfig = authConfig;
     const platformName = (framework === 'swift') ? 'iOS' : (framework === 'kotlin') ? 'Android' : 'Android';
     let code = `import { remote } from 'webdriverio';\n\ndescribe('Mobile Tests', () => {\n`;
 
@@ -84,12 +86,7 @@ export class StepGenerator {
     // AUTHENTICATION / LOGIN
     // ══════════════════════════════════════════════
     if (text.includes('log in') || text.includes('login') || text.includes('sign in')) {
-      if (text.includes('biometric') || text.includes('fingerprint') || text.includes('face'))
-        return `      await driver.execute('mobile: fingerprint', { fingerprintId: 1 });\n`;
-      if (text.includes('otp') || text.includes('code'))
-        return this.findAndType('otp_field', '123456');
-      const el = this.extractElement(step.text);
-      return `      const loginBtn = await driver.$('~${el}');\n      await loginBtn.click();\n`;
+      return this.generateLoginStep(step, text);
     }
     if (text.includes('log out') || text.includes('logout') || text.includes('sign out')) {
       return `      const logoutBtn = await driver.$('~logout');\n      await logoutBtn.click();\n`;
@@ -416,6 +413,66 @@ export class StepGenerator {
   // ══════════════════════════════════════════════
   // HELPERS
   // ══════════════════════════════════════════════
+
+  private generateLoginStep(step: GherkinStep, text: string): string {
+    // Biometric — no authConfig needed
+    if (text.includes('biometric') || text.includes('fingerprint') || text.includes('face'))
+      return `      await driver.execute('mobile: fingerprint', { fingerprintId: 1 });\n`;
+
+    const auth = this.authConfig;
+    if (!auth) return `      // AUTH SKIPPED: no bot-test-config.json found in this repo\n`;
+
+    switch (auth.type) {
+      case 'email_password':
+        return (
+          `      const emailField = await driver.$('~email_field');\n` +
+          `      await emailField.waitForDisplayed({ timeout: 10000 });\n` +
+          `      await emailField.setValue(${JSON.stringify(auth.email ?? '')});\n` +
+          `      const passwordField = await driver.$('~password_field');\n` +
+          `      await passwordField.setValue(${JSON.stringify(auth.password ?? '')});\n` +
+          `      const loginBtn = await driver.$('~login_button');\n` +
+          `      await loginBtn.click();\n`
+        );
+      case 'username_password':
+        return (
+          `      const usernameField = await driver.$('~username_field');\n` +
+          `      await usernameField.waitForDisplayed({ timeout: 10000 });\n` +
+          `      await usernameField.setValue(${JSON.stringify(auth.username ?? '')});\n` +
+          `      const passwordField = await driver.$('~password_field');\n` +
+          `      await passwordField.setValue(${JSON.stringify(auth.password ?? '')});\n` +
+          `      const loginBtn = await driver.$('~login_button');\n` +
+          `      await loginBtn.click();\n`
+        );
+      case 'phone_otp':
+        return (
+          `      const phoneField = await driver.$('~phone_field');\n` +
+          `      await phoneField.waitForDisplayed({ timeout: 10000 });\n` +
+          `      await phoneField.setValue(${JSON.stringify(auth.phone ?? '')});\n` +
+          `      const sendOtpBtn = await driver.$('~send_otp_button');\n` +
+          `      await sendOtpBtn.click();\n` +
+          `      await driver.pause(3000);\n` +
+          this.findAndType('otp_field', '123456')
+        );
+      case 'guest':
+        return (
+          `      try {\n` +
+          `        const guestBtn = await driver.$('~guest_button');\n` +
+          `        await guestBtn.waitForDisplayed({ timeout: 5000 });\n` +
+          `        await guestBtn.click();\n` +
+          `      } catch {\n` +
+          `        const skipBtn = await driver.$('~skip_button');\n` +
+          `        await skipBtn.waitForDisplayed({ timeout: 5000 });\n` +
+          `        await skipBtn.click();\n` +
+          `      }\n`
+        );
+      case 'none':
+        return `      // No login screen (type: none)\n`;
+      default: {
+        const el = this.extractElement(step.text);
+        return `      const loginBtn = await driver.$('~${el}');\n      await loginBtn.click();\n`;
+      }
+    }
+  }
 
   private findAndClick(el: string): string {
     const locator = this.buildLocator(el);

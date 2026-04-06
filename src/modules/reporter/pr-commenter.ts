@@ -191,26 +191,51 @@ export class PrCommenter {
   }
 
   private buildFailedSection(failed: TestResult[]): string {
-    return failed
-      .map((t) => {
-        const lines = [
-          `#### ${t.scenario}`,
-          `- **Device**: ${t.device}`,
-          `- **Duration**: ${(t.duration / 1000).toFixed(1)}s`,
-          `- **Error**: \`${t.error || 'Unknown error'}\``,
-        ];
-        if (t.screenshot) {
-          lines.push(`- **Screenshot**: ![failure](${t.screenshot})`);
-        }
-        if (t.videoUrl) {
-          lines.push(`- **Video**: [Watch Test Recording](${t.videoUrl})`);
-        }
-        if (t.sessionId) {
-          lines.push(`- **Session**: [View on BrowserStack](https://app-automate.browserstack.com/sessions/${t.sessionId})`);
-        }
-        return lines.join('\n');
-      })
-      .join('\n\n---\n\n');
+    // Show first 10 failures inline, rest collapsed to keep comment size manageable
+    const MAX_INLINE = 10;
+    const inline = failed.slice(0, MAX_INLINE);
+    const overflow = failed.slice(MAX_INLINE);
+
+    const renderEntry = (t: TestResult) => {
+      const lines = [
+        `#### ${t.scenario}`,
+        `- **Device**: ${t.device}`,
+        `- **Duration**: ${(t.duration / 1000).toFixed(1)}s`,
+        `- **Error**: \`${t.error || 'Unknown error'}\``,
+      ];
+      // Never embed base64 screenshots — they bloat comments and GitHub won't render them
+      if (t.videoUrl) {
+        lines.push(`- **Video**: [Watch Test Recording](${t.videoUrl})`);
+      }
+      if (t.sessionId) {
+        lines.push(`- **Session**: [View on BrowserStack](https://app-automate.browserstack.com/sessions/${t.sessionId})`);
+      }
+      return lines.join('\n');
+    };
+
+    const parts: string[] = [inline.map(renderEntry).join('\n\n---\n\n')];
+
+    if (overflow.length > 0) {
+      const overflowRows = overflow.map((t) => {
+        const session = t.sessionId ? `[Session](https://app-automate.browserstack.com/sessions/${t.sessionId})` : '-';
+        const video = t.videoUrl ? `[Video](${t.videoUrl})` : '-';
+        return `| ${t.scenario} | ${t.device} | ${t.error?.slice(0, 80) || 'Unknown'} | ${session} | ${video} |`;
+      }).join('\n');
+
+      parts.push([
+        '',
+        `<details>`,
+        `<summary>+${overflow.length} more failures</summary>`,
+        '',
+        '| Scenario | Device | Error | Session | Video |',
+        '|----------|--------|-------|---------|-------|',
+        overflowRows,
+        '',
+        '</details>',
+      ].join('\n'));
+    }
+
+    return parts.join('\n');
   }
 
   private buildWarningsSection(warned: TestResult[]): string {
@@ -251,9 +276,18 @@ export class PrCommenter {
   }
 
   async postReport(owner: string, repo: string, prNumber: number, report: string): Promise<void> {
+    const GITHUB_COMMENT_LIMIT = 65000; // GitHub hard limit is 65536, keep buffer
+    let body = report;
+
+    if (body.length > GITHUB_COMMENT_LIMIT) {
+      const truncationNote = '\n\n---\n> ⚠️ Report truncated — full details in [workflow logs](https://github.com/' + owner + '/' + repo + '/actions).';
+      body = body.slice(0, GITHUB_COMMENT_LIMIT - truncationNote.length) + truncationNote;
+      this.logger.warn('Report truncated to fit GitHub comment limit', { originalLength: report.length });
+    }
+
     try {
-      await this.github.postComment(owner, repo, prNumber, report);
-      this.logger.log('Report posted to PR', { prNumber });
+      await this.github.postComment(owner, repo, prNumber, body);
+      this.logger.log('Report posted to PR', { prNumber, length: body.length });
     } catch (err) {
       this.logger.error('Failed to post report', err);
       throw err;

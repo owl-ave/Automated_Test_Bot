@@ -5,6 +5,16 @@ export interface ModuleStatus {
   error?: string;
 }
 
+export type AuthType = 'email_password' | 'phone_otp' | 'username_password' | 'guest' | 'none';
+
+export interface AuthConfig {
+  type: AuthType;
+  email?: string;
+  password?: string;
+  phone?: string;
+  username?: string;
+}
+
 export interface PipelineContext {
   prNumber: number;
   repoOwner: string;
@@ -18,6 +28,7 @@ export interface PipelineContext {
   testResults?: TestResult[];
   logs: string[];
   appBuild?: AppBuildResult;
+  authConfig?: AuthConfig;
   moduleStatuses: ModuleStatus[];
 }
 

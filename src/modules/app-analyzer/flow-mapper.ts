@@ -1,86 +1,132 @@
 import { Screen, Flow, ApiEndpoint } from '../../types';
+import { ClaudeClient } from '../../ai/claude-client';
 import { Logger } from '../../utils/logger';
 
+const logger = new Logger('FlowMapper');
+
+interface AiFlow {
+  name: string;
+  screens: string[];
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  reason: string;
+}
+
 export class FlowMapper {
-  private logger = new Logger('FlowMapper');
+  private claudeClient = new ClaudeClient();
 
-  mapFlows(screens: Screen[], endpoints: ApiEndpoint[]): Flow[] {
+  async mapFlows(screens: Screen[], endpoints: ApiEndpoint[]): Promise<Flow[]> {
+    if (screens.length === 0) return [];
+
+    try {
+      const flows = await this.detectFlowsWithAi(screens);
+      logger.log('AI flow detection complete', { count: flows.length });
+      return flows;
+    } catch (error) {
+      logger.warn('AI flow detection failed, using name-pattern fallback', error);
+      return this.patternFallback(screens);
+    }
+  }
+
+  private async detectFlowsWithAi(screens: Screen[]): Promise<Flow[]> {
+    const screenList = screens.map((s) => {
+      const elements = s.elements.slice(0, 10).map((e) => `"${e.id}"${e.text ? ` (${e.text})` : ''}`).join(', ');
+      return `- ${s.name} [${s.type}]${elements ? `\n  elements: ${elements}` : ''}`;
+    }).join('\n');
+
+    const prompt = `You are a mobile app analyst. Analyze these screens from a mobile app and group them into logical user flows.
+
+Screens found in the codebase:
+${screenList}
+
+Group these screens into flows a QA engineer would test. Each flow should represent a complete user journey.
+
+Rules:
+- Look at screen NAMES and ELEMENT IDs to understand what each screen does — don't rely on keywords alone
+- A screen named "LanguageSelectionViewController" with elements like "english_button", "spanish_button" is clearly a language/onboarding flow
+- A screen with elements like "email_input", "password_input", "login_button" is authentication
+- Every screen must belong to at least one flow — don't leave any screen out
+- Screens that don't match obvious patterns should be grouped by their likely purpose (infer from name + elements)
+- Order screens within a flow logically (e.g., language selection → onboarding → login → home)
+
+Priority rules:
+- "critical": login, signup, payment, checkout, core auth
+- "high": onboarding, home, main navigation, language/locale setup, core features
+- "medium": profile, settings, search, secondary features
+- "low": about, help, faq, static screens
+
+Respond ONLY with a JSON array, no explanation:
+[
+  {
+    "name": "flow-name",
+    "screens": ["ScreenName1", "ScreenName2"],
+    "priority": "critical|high|medium|low",
+    "reason": "one line why these screens form a flow"
+  }
+]`;
+
+    const response = await this.claudeClient.prompt(prompt);
+    const parsed = this.parseAiResponse(response, screens);
+    return parsed;
+  }
+
+  private parseAiResponse(response: string, allScreens: Screen[]): Flow[] {
+    const cleaned = response
+      .replace(/```json\n?/gi, '')
+      .replace(/```\n?/g, '')
+      .trim();
+
+    const json: AiFlow[] = JSON.parse(cleaned);
+
+    if (!Array.isArray(json)) throw new Error('AI response is not an array');
+
+    const validScreenNames = new Set(allScreens.map((s) => s.name));
+
+    const flows: Flow[] = json
+      .filter((f) => f.name && Array.isArray(f.screens) && f.screens.length > 0)
+      .map((f) => ({
+        name: f.name,
+        screens: f.screens.filter((s) => validScreenNames.has(s)),
+        priority: (['critical', 'high', 'medium', 'low'].includes(f.priority) ? f.priority : 'medium') as Flow['priority'],
+        affectedByPr: false,
+      }))
+      .filter((f) => f.screens.length > 0);
+
+    // Ensure no screen is left out — add ungrouped screens to a catch-all flow
+    const groupedScreens = new Set(flows.flatMap((f) => f.screens));
+    const ungrouped = allScreens.filter((s) => !groupedScreens.has(s.name)).map((s) => s.name);
+    if (ungrouped.length > 0) {
+      flows.push({ name: 'other-screens', screens: ungrouped, priority: 'low', affectedByPr: false });
+    }
+
+    return flows;
+  }
+
+  // Fallback used only if Claude API fails
+  private patternFallback(screens: Screen[]): Flow[] {
+    const patterns: { name: string; keywords: string[]; priority: Flow['priority'] }[] = [
+      { name: 'authentication', keywords: ['login', 'signin', 'signup', 'register', 'auth', 'otp', 'password', 'forgot'], priority: 'critical' },
+      { name: 'onboarding', keywords: ['onboard', 'welcome', 'intro', 'tutorial', 'splash', 'language', 'locale', 'setup', 'start'], priority: 'high' },
+      { name: 'payment', keywords: ['cart', 'checkout', 'payment', 'billing', 'order', 'purchase'], priority: 'critical' },
+      { name: 'home', keywords: ['home', 'dashboard', 'feed', 'main', 'landing'], priority: 'high' },
+      { name: 'profile', keywords: ['profile', 'settings', 'account', 'preference', 'edit'], priority: 'medium' },
+    ];
+
     const flows: Flow[] = [];
+    const matched = new Set<string>();
 
-    // Common flow patterns — covers all platforms (RN screens, Activities, ViewControllers, Composables, SwiftUI Views)
-    const patterns: { [key: string]: { screens: string[]; priority: string } } = {
-      authentication: { screens: ['login', 'signup', 'otp', 'password', 'auth', 'register', 'signin', 'signout'], priority: 'critical' },
-      onboarding: { screens: ['onboard', 'welcome', 'intro', 'tutorial', 'walkthrough', 'splash'], priority: 'high' },
-      payment: { screens: ['cart', 'checkout', 'payment', 'confirmation', 'billing', 'order', 'purchase'], priority: 'critical' },
-      home: { screens: ['home', 'dashboard', 'feed', 'main', 'root', 'landing'], priority: 'high' },
-      search: { screens: ['search', 'results', 'detail', 'filter', 'discover', 'explore'], priority: 'high' },
-      profile: { screens: ['profile', 'settings', 'account', 'preference', 'edit'], priority: 'medium' },
-      navigation: { screens: ['tab', 'menu', 'drawer', 'navigation', 'sidebar', 'bottombar'], priority: 'high' },
-      media: { screens: ['camera', 'photo', 'video', 'gallery', 'image', 'media', 'upload'], priority: 'medium' },
-      messaging: { screens: ['chat', 'message', 'conversation', 'inbox', 'notification'], priority: 'high' },
-    };
-
-    for (const [flowName, config] of Object.entries(patterns)) {
-      const matchedScreens = screens.filter((s) => config.screens.some((p) => s.name.toLowerCase().includes(p)));
-      if (matchedScreens.length > 0) {
-        flows.push({
-          name: flowName,
-          screens: matchedScreens.map((s) => s.name),
-          priority: config.priority as 'critical' | 'high' | 'medium' | 'low',
-          affectedByPr: false,
-        });
+    for (const p of patterns) {
+      const hit = screens.filter((s) => p.keywords.some((k) => s.name.toLowerCase().includes(k)));
+      if (hit.length > 0) {
+        flows.push({ name: p.name, screens: hit.map((s) => s.name), priority: p.priority, affectedByPr: false });
+        hit.forEach((s) => matched.add(s.name));
       }
     }
 
-    // Native navigation detection — group Activities/ViewControllers/Fragments by type into navigation flows
-    const activities = screens.filter((s) => s.type === 'activity');
-    const fragments = screens.filter((s) => s.type === 'fragment');
-    const viewControllers = screens.filter((s) => s.type === 'viewcontroller');
-    const composables = screens.filter((s) => s.type === 'composable');
-    const swiftuiViews = screens.filter((s) => s.type === 'swiftui-view');
-
-    // If we found native screens not already captured by pattern matching, add a catch-all navigation flow
-    const unmatchedScreens = screens.filter((s) => !flows.some((f) => f.screens.includes(s.name)));
-    if (unmatchedScreens.length > 0) {
-      // Group by screen type for coherent flows
-      if (activities.length + fragments.length > 0) {
-        const androidScreens = [...activities, ...fragments, ...composables]
-          .filter((s) => unmatchedScreens.includes(s))
-          .map((s) => s.name);
-        if (androidScreens.length > 0) {
-          flows.push({ name: 'android-navigation', screens: androidScreens, priority: 'medium', affectedByPr: false });
-        }
-      }
-      if (viewControllers.length + swiftuiViews.length > 0) {
-        const iosScreens = [...viewControllers, ...swiftuiViews]
-          .filter((s) => unmatchedScreens.includes(s))
-          .map((s) => s.name);
-        if (iosScreens.length > 0) {
-          flows.push({ name: 'ios-navigation', screens: iosScreens, priority: 'medium', affectedByPr: false });
-        }
-      }
+    const leftover = screens.filter((s) => !matched.has(s.name)).map((s) => s.name);
+    if (leftover.length > 0) {
+      flows.push({ name: 'app-screens', screens: leftover, priority: 'medium', affectedByPr: false });
     }
 
-    // API-driven flows — if endpoints match common patterns, create flows for them
-    const apiPatterns: { [key: string]: { endpoints: string[]; priority: string } } = {
-      'api-auth': { endpoints: ['/login', '/signup', '/auth', '/token', '/register'], priority: 'critical' },
-      'api-data': { endpoints: ['/users', '/profile', '/account'], priority: 'high' },
-      'api-payment': { endpoints: ['/payment', '/charge', '/order', '/checkout'], priority: 'critical' },
-    };
-
-    for (const [flowName, config] of Object.entries(apiPatterns)) {
-      const matchedEndpoints = endpoints.filter((e) => config.endpoints.some((p) => e.path.toLowerCase().includes(p)));
-      if (matchedEndpoints.length > 0 && !flows.some((f) => f.name === flowName)) {
-        flows.push({
-          name: flowName,
-          screens: matchedEndpoints.map((e) => `${e.method} ${e.path}`),
-          priority: config.priority as 'critical' | 'high' | 'medium' | 'low',
-          affectedByPr: false,
-        });
-      }
-    }
-
-    this.logger.log('Flows mapped', { count: flows.length });
     return flows;
   }
 
@@ -90,12 +136,12 @@ export class FlowMapper {
         changedScreenNames.some((cs) => s.toLowerCase().includes(cs.toLowerCase())),
       );
     });
+
     const affected = flows.filter((f) => f.affectedByPr);
     if (affected.length > 0) return affected;
 
-    // If no flows matched changed files, return critical/high priority flows as fallback
-    // so ScenarioBrain still has something to generate tests for
-    this.logger.warn('No flows matched changed screens, falling back to high-priority flows');
+    // No flows matched changed files — return critical/high as fallback
+    logger.warn('No flows matched changed screens, falling back to high-priority flows');
     const fallback = flows.filter((f) => f.priority === 'critical' || f.priority === 'high');
     return fallback.length > 0 ? fallback : flows;
   }

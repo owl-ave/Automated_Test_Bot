@@ -1,7 +1,19 @@
-import { PipelineContext, ModuleResult } from '../../types';
+import { PipelineContext, ModuleResult, BddScenario } from '../../types';
 import { FeatureGenerator } from './feature-generator';
 import { ClaudeClient } from '../../ai/claude-client';
 import { Logger } from '../../utils/logger';
+
+const LOGIN_KEYWORDS = ['log in', 'login', 'sign in', 'sign up', 'register', 'authenticate', 'otp', 'biometric'];
+
+function isLoginScenario(scenario: BddScenario): boolean {
+  const text = (scenario.scenario + ' ' + scenario.steps.map(s => s.text).join(' ')).toLowerCase();
+  return LOGIN_KEYWORDS.some(kw => text.includes(kw));
+}
+
+function filterAuthScenarios(scenarios: BddScenario[], authType: string | undefined): BddScenario[] {
+  if (!authType || authType === 'none') return scenarios.filter(s => !isLoginScenario(s));
+  return scenarios;
+}
 
 function getElementIdRules(framework: string): string {
   switch (framework) {
@@ -34,10 +46,11 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
         context.codeAnalysis.industry,
         context.codeAnalysis.criticalFlows,
         context.codeAnalysis.framework,
+        context.codeAnalysis.screens,
       );
-      context.scenariosBdd = scenarios;
-      logger.log('Feature generation complete (from flows)', { scenarios: scenarios.length });
-      return { moduleName: 'ScenarioBrain', status: 'success', data: scenarios };
+      context.scenariosBdd = filterAuthScenarios(scenarios, context.authConfig?.type);
+      logger.log('Feature generation complete (from flows)', { scenarios: context.scenariosBdd.length });
+      return { moduleName: 'ScenarioBrain', status: 'success', data: context.scenariosBdd };
     }
 
     // Fallback: generate scenarios directly from PR diff using Claude
@@ -98,9 +111,9 @@ Only output valid Gherkin using the step formats above. No explanations.`;
     const response = await claude.prompt(prompt);
     const scenarios = generator.parseResponse(response);
 
-    context.scenariosBdd = scenarios;
-    logger.log('Feature generation complete (from diff)', { scenarios: scenarios.length });
-    return { moduleName: 'ScenarioBrain', status: 'success', data: scenarios };
+    context.scenariosBdd = filterAuthScenarios(scenarios, context.authConfig?.type);
+    logger.log('Feature generation complete (from diff)', { scenarios: context.scenariosBdd.length });
+    return { moduleName: 'ScenarioBrain', status: 'success', data: context.scenariosBdd };
   } catch (error) {
     logger.error('Feature generation failed', error);
     return { moduleName: 'ScenarioBrain', status: 'error', error: String(error) };

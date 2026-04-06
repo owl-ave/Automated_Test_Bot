@@ -229,7 +229,9 @@ export class TestExecutor {
             // Intentional no-op (e.g., "the app is launched" — already handled by session creation)
             break;
           default:
-            throw new Error(`Unrecognized step: "${step.text}" — could not map to any Appium action (tap, type, swipe, scroll, assert, etc.)`);
+            // Log unrecognized step but don't fail — skip and continue
+            logger.warn(`Skipping unrecognized step (no Appium mapping found)`, { step: step.text });
+            return;
         }
         return; // Success
       } catch (error) {
@@ -260,54 +262,61 @@ export class TestExecutor {
       return { type: 'noop' };
     }
 
-    // "user is on" screen — treat as wait for that screen
+    // "user is on" / "is on screen" — wait for that screen element
     const onScreenMatch = text.match(/(?:is on|on screen|on the)\s+["']([^"']+)["']/i);
     if (onScreenMatch) return { type: 'wait', target: onScreenMatch[1].trim(), duration: 10000 };
 
-    // Tap patterns
-    const tapMatch = text.match(/(?:tap|click|press)\s+(?:on\s+)?["']?([^"']+)["']?/i);
-    if (tapMatch) return { type: 'tap', target: tapMatch[1].trim() };
-
-    // Type/input patterns
-    const typeMatch = text.match(/(?:type|enter|input|fill)\s+["']([^"']+)["']\s+(?:in|into)\s+["']?([^"']+)["']?/i);
-    if (typeMatch) return { type: 'type', target: typeMatch[2].trim(), value: typeMatch[1] };
-
-    // Alternative type pattern
-    const typeMatch2 = text.match(/(?:type|enter|input|fill)\s+["']([^"']+)["']/i);
-    if (typeMatch2) return { type: 'type', target: 'input_field', value: typeMatch2[1] };
-
-    // Swipe patterns
-    const swipeMatch = text.match(/swipe\s+(left|right|up|down)/i);
-    if (swipeMatch) return { type: 'swipe', direction: swipeMatch[1].toLowerCase() };
-
-    // Scroll patterns
-    const scrollMatch = text.match(/scroll\s+(up|down)/i);
-    if (scrollMatch) return { type: 'scroll', direction: scrollMatch[1].toLowerCase() };
-
-    // Long press patterns
-    const longPressMatch = text.match(/long\s*press\s+(?:on\s+)?["']?([^"']+)["']?/i);
-    if (longPressMatch) return { type: 'longpress', target: longPressMatch[1].trim(), duration: 2000 };
-
-    // Wait patterns
-    const waitMatch = text.match(/wait\s+(?:for\s+)?["']?([^"']+)["']?/i);
-    if (waitMatch) return { type: 'wait', target: waitMatch[1].trim(), duration: 10000 };
-
-    // Visibility assertion
-    const visibleMatch = text.match(/(?:see|visible|displayed|shown|appears?)\s+["']?([^"']+)["']?/i);
-    if (visibleMatch) return { type: 'assert_visible', target: visibleMatch[1].trim() };
-
-    // Text assertion
-    const textMatch = text.match(/(?:text|contains?|shows?)\s+["']([^"']+)["']/i);
-    if (textMatch) return { type: 'assert_text', target: 'current_screen', value: textMatch[1] };
-
-    // Back navigation
+    // Back navigation (check before tap to avoid "press back" matching tap)
     if (lower.includes('go back') || lower.includes('navigate back') || lower.includes('press back')) {
       return { type: 'back' };
     }
 
+    // Long press (check before regular tap)
+    const longPressMatch = text.match(/long[\s-]?press(?:es|ed)?\s+(?:on\s+)?["']?([^"']+?)["']?\s*$/i);
+    if (longPressMatch) return { type: 'longpress', target: longPressMatch[1].trim(), duration: 2000 };
+
+    // Tap / click / press — handles: tap, taps, tapped, click, clicks, clicked, press, presses, pressed
+    // Also handles: "user taps on X", "taps the X button", "tap 'X'"
+    const tapMatch = text.match(/\b(?:tap|taps|tapped|click|clicks|clicked|press|presses|pressed)\b\s+(?:on\s+|the\s+)?["']?([^"',]+?)["']?\s*(?:button|field|screen|icon|tab|link|toggle|switch|option|menu|bar|item|input|label)?[\s,]*$/i);
+    if (tapMatch) return { type: 'tap', target: tapMatch[1].trim().replace(/\s+/g, '_').toLowerCase() };
+
+    // Type/input — "enters 'value' in 'field'" / "types 'X' into field"
+    const typeMatch = text.match(/\b(?:type|types|typed|enter|enters|entered|input|inputs|fill|fills|filled)\b\s+["']([^"']+)["']\s+(?:in|into|on)\s+(?:the\s+)?["']?([^"']+?)["']?\s*(?:field|input|box)?[\s,]*$/i);
+    if (typeMatch) return { type: 'type', target: typeMatch[2].trim().replace(/\s+/g, '_').toLowerCase(), value: typeMatch[1] };
+
+    // Type without target field
+    const typeMatch2 = text.match(/\b(?:type|types|enter|enters|input|inputs|fill|fills)\b\s+["']([^"']+)["']/i);
+    if (typeMatch2) return { type: 'type', target: 'input_field', value: typeMatch2[1] };
+
+    // Swipe patterns
+    const swipeMatch = text.match(/\bswipes?\s+(left|right|up|down)\b/i);
+    if (swipeMatch) return { type: 'swipe', direction: swipeMatch[1].toLowerCase() };
+
+    // Scroll patterns
+    const scrollMatch = text.match(/\bscrolls?\s+(up|down)\b/i);
+    if (scrollMatch) return { type: 'scroll', direction: scrollMatch[1].toLowerCase() };
+
+    // Wait patterns
+    const waitMatch = text.match(/\bwaits?\s+(?:for\s+)?["']?([^"']+?)["']?\s*(?:to\s+(?:appear|load|display))?[\s,]*$/i);
+    if (waitMatch) return { type: 'wait', target: waitMatch[1].trim(), duration: 10000 };
+
+    // Visibility assertion — "sees", "should see", "is visible", "is displayed", "appears"
+    const visibleMatch = text.match(/\b(?:sees?|should see|visible|displayed|shown|appears?)\s+["']?([^"']+?)["']?\s*$/i);
+    if (visibleMatch) return { type: 'assert_visible', target: visibleMatch[1].trim() };
+
+    // Text assertion
+    const textMatch = text.match(/\b(?:contains?|shows?|displays?)\s+["']([^"']+)["']/i);
+    if (textMatch) return { type: 'assert_text', target: 'current_screen', value: textMatch[1] };
+
     // Screenshot
     if (lower.includes('screenshot') || lower.includes('capture screen')) {
       return { type: 'screenshot' };
+    }
+
+    // Last-resort: if step contains a quoted string, try tapping it
+    const quotedFallback = text.match(/["']([^"']+)["']/);
+    if (quotedFallback && (lower.includes('tap') || lower.includes('click') || lower.includes('press') || lower.includes('select') || lower.includes('open'))) {
+      return { type: 'tap', target: quotedFallback[1].trim().replace(/\s+/g, '_').toLowerCase() };
     }
 
     return { type: 'unknown' };

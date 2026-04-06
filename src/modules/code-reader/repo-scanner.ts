@@ -98,16 +98,62 @@ export class RepoScanner {
       try {
         const content = fs.readFileSync(file, 'utf-8');
         const name = path.basename(file, '.swift');
+        let type: 'activity' | 'fragment' | 'viewcontroller' | 'screen' | 'composable' | 'swiftui-view' | null = null;
 
         if (content.includes('UIViewController') || content.includes('UITableViewController') || content.includes('UICollectionViewController')) {
-          screens.push({ name, path: file, type: 'viewcontroller', elements: [] });
+          type = 'viewcontroller';
         } else if ((content.includes('import SwiftUI') || content.includes('SwiftUI')) && /struct\s+\w+\s*:\s*View/.test(content)) {
-          screens.push({ name, path: file, type: 'swiftui-view', elements: [] });
+          type = 'swiftui-view';
+        }
+
+        if (type) {
+          const elements = this.extractSwiftElements(content);
+          screens.push({ name, path: file, type, elements });
         }
       } catch { /* ignore unreadable files */ }
     }
 
     return screens;
+  }
+
+  private extractSwiftElements(content: string): { id: string; type: string; text?: string }[] {
+    const elements: { id: string; type: string; text?: string }[] = [];
+    const seen = new Set<string>();
+
+    const add = (id: string, type: string, text?: string) => {
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        elements.push({ id, type, text });
+      }
+    };
+
+    // accessibilityIdentifier = "xxx"
+    for (const m of content.matchAll(/\.accessibilityIdentifier\s*=\s*["']([^"']+)["']/g)) add(m[1], 'element');
+    for (const m of content.matchAll(/accessibilityIdentifier:\s*["']([^"']+)["']/g)) add(m[1], 'element');
+
+    // .accessibilityIdentifier("xxx") — SwiftUI
+    for (const m of content.matchAll(/\.accessibilityIdentifier\s*\(\s*["']([^"']+)["']\s*\)/g)) add(m[1], 'element');
+
+    // accessibilityLabel = "xxx"
+    for (const m of content.matchAll(/\.accessibilityLabel\s*=\s*["']([^"']+)["']/g)) add(m[1], 'label');
+    for (const m of content.matchAll(/\.accessibilityLabel\s*\(\s*["']([^"']+)["']\s*\)/g)) add(m[1], 'label');
+
+    // IBOutlet / @IBOutlet weak var nameHere: UIButton
+    for (const m of content.matchAll(/@IBOutlet\s+(?:weak\s+)?var\s+(\w+)\s*:\s*(UI\w+)/g)) add(m[1], m[2]);
+
+    // Button titles: setTitle("xxx") or Button("xxx")
+    for (const m of content.matchAll(/setTitle\s*\(\s*["']([^"']+)["']/g)) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'button', m[1]);
+    for (const m of content.matchAll(/Button\s*\(\s*["']([^"']+)["']/g)) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'button', m[1]);
+
+    // TextField/SecureField placeholders: TextField("placeholder", ...)
+    for (const m of content.matchAll(/(?:TextField|SecureField)\s*\(\s*["']([^"']+)["']/g)) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'textfield', m[1]);
+
+    // UILabel.text = "xxx"
+    for (const m of content.matchAll(/\.text\s*=\s*["']([^"']+)["']/g)) {
+      if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'label', m[1]);
+    }
+
+    return elements;
   }
 
   private scanKotlinScreens(mobilePath: string): Screen[] {
