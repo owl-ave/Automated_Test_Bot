@@ -41,11 +41,18 @@ export async function runChaos(context: PipelineContext): Promise<ModuleResult> 
     if (iosDriver) drivers.push({ driver: iosDriver, platform: 'ios' });
 
     if (drivers.length === 0) {
-      logger.warn('No drivers available for chaos testing');
+      logger.warn('No drivers available for chaos testing — requires real device sessions (BrowserStack)');
+      const screens = context.codeAnalysis?.screens?.map((s) => s.name) ?? [];
       return {
         moduleName: 'chaos',
         status: 'warning',
-        data: emptyResult(),
+        data: {
+          ...emptyResult(),
+          pendingTests: ['offline-behavior', 'reconnection', 'slow-network', 'incoming-call',
+                         'notification', 'app-switch', 'orientation', 'monkey-test'],
+          pendingScreens: screens,
+          note: 'Chaos tests identified but could not run — no real device sessions available',
+        },
         error: 'No drivers available',
       };
     }

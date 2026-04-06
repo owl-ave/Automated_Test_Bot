@@ -36,7 +36,22 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
 
   try {
     const screens = context.codeAnalysis?.screens || [];
-    const screenNames = screens.map((s) => s.name);
+    let screenNames = screens.map((s) => s.name);
+
+    // Derive screen names from diff files when static analysis found none
+    if (screenNames.length === 0 && context.diffFiles.length > 0) {
+      const uiFilePattern = /screen|activity|fragment|composable|viewcontroller|view|page/i;
+      screenNames = context.diffFiles
+        .filter((f) => uiFilePattern.test(f.path))
+        .map((f) => {
+          const base = f.path.split('/').pop() || f.path;
+          return base.replace(/\.(swift|kt|tsx?|jsx?|dart)$/, '');
+        })
+        .filter((name, idx, arr) => arr.indexOf(name) === idx);
+      if (screenNames.length > 0) {
+        logger.log('Derived screen names from diff files', { screens: screenNames });
+      }
+    }
 
     if (screenNames.length === 0) {
       logger.warn('No screens identified for visual regression testing');
@@ -57,11 +72,15 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
     const iosDriver = (context as any).iosDriver;
 
     if (!androidDriver && !iosDriver) {
-      logger.warn('No drivers available — skipping visual regression (requires real device sessions)');
+      logger.warn('No drivers available — visual screenshots require real device sessions (BrowserStack)');
       return {
         moduleName: 'visual-regression',
         status: 'warning',
-        data: emptyResult(),
+        data: {
+          ...emptyResult(),
+          pendingScreens: screenNames,
+          note: `${screenNames.length} screen(s) identified but could not be tested — no real device sessions available`,
+        },
         error: 'No drivers available',
       };
     }

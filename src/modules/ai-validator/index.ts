@@ -1,4 +1,4 @@
-import { PipelineContext, ModuleResult, TestResult } from '../../types';
+import { PipelineContext, ModuleResult, TestResult, BddScenario } from '../../types';
 import { OutputComparator } from './comparator';
 import { VisualChecker } from './visual-checker';
 import { DecisionEngine, DecisionResult } from './decision-engine';
@@ -20,11 +20,75 @@ interface ValidationSummary {
   decisions: Array<{ scenario: string; device: string; decision: DecisionResult }>;
 }
 
+/** Static validation when no real-device test results are available */
+async function runStaticScenarioValidation(context: PipelineContext): Promise<ModuleResult> {
+  const scenarios = context.scenariosBdd ?? [];
+  if (scenarios.length === 0) {
+    return { moduleName: 'AiValidator', status: 'warning', error: 'No test results and no scenarios to validate' };
+  }
+
+  logger.log('No test results — running static BDD scenario quality check', { scenarios: scenarios.length });
+
+  const issues: Array<{ scenario: string; issue: string; severity: 'error' | 'warning' }> = [];
+
+  const validKeywords = ['Given', 'When', 'Then', 'And', 'But'];
+  const appiumPatterns = [
+    /user taps on/i,
+    /user types .* in/i,
+    /user scrolls/i,
+    /user swipes/i,
+    /user waits for/i,
+    /user should see/i,
+    /text shows/i,
+    /user goes back/i,
+    /the app is launched/i,
+  ];
+
+  for (const s of scenarios) {
+    if (!s.steps || s.steps.length === 0) {
+      issues.push({ scenario: s.scenario, issue: 'Scenario has no steps', severity: 'error' });
+      continue;
+    }
+    // Check every step has a valid keyword
+    for (const step of s.steps) {
+      if (!validKeywords.includes(step.keyword)) {
+        issues.push({ scenario: s.scenario, issue: `Invalid keyword: "${step.keyword}"`, severity: 'error' });
+      }
+    }
+    // Check at least one step matches an Appium-executable pattern
+    const hasExecutableStep = s.steps.some((step) => appiumPatterns.some((p) => p.test(step.text)));
+    if (!hasExecutableStep) {
+      issues.push({ scenario: s.scenario, issue: 'No Appium-executable steps detected', severity: 'warning' });
+    }
+    // Check scenario has a Given and a Then
+    const hasGiven = s.steps.some((st) => st.keyword === 'Given');
+    const hasThen = s.steps.some((st) => st.keyword === 'Then');
+    if (!hasGiven) issues.push({ scenario: s.scenario, issue: 'Missing Given step', severity: 'warning' });
+    if (!hasThen) issues.push({ scenario: s.scenario, issue: 'Missing Then (assertion) step', severity: 'warning' });
+  }
+
+  const errorCount = issues.filter((i) => i.severity === 'error').length;
+  logger.log('Static scenario validation complete', { scenarios: scenarios.length, issues: issues.length, errors: errorCount });
+
+  return {
+    moduleName: 'AiValidator',
+    status: errorCount > 0 ? 'warning' : 'success',
+    data: {
+      mode: 'static',
+      scenariosChecked: scenarios.length,
+      issues,
+      note: 'Real-device test results not available — static BDD quality check performed instead',
+    },
+  };
+}
+
 export async function runAiValidator(context: PipelineContext): Promise<ModuleResult> {
   try {
     const testResults = context.testResults;
+
+    // No real-device results — run static validation on generated BDD scenarios instead
     if (!testResults || testResults.length === 0) {
-      return { moduleName: 'AiValidator', status: 'warning', error: 'No test results to validate' };
+      return runStaticScenarioValidation(context);
     }
 
     const comparator = new OutputComparator();

@@ -6,13 +6,16 @@ import { Logger } from '../../utils/logger';
 export class AndroidBuilder {
   private logger = new Logger('AndroidBuilder');
   private rootPath: string;
+  private contextFramework: string | undefined;
 
-  constructor(rootPath: string) {
+  constructor(rootPath: string, contextFramework?: string) {
     this.rootPath = rootPath;
+    this.contextFramework = contextFramework;
   }
 
   async build(): Promise<string> {
-    const framework = this.detectFramework();
+    // G1: Use framework from pipeline context first, fall back to local detection
+    const framework = this.contextFramework || this.detectFramework();
 
     if (framework === 'react-native') {
       return this.buildReactNative();
@@ -28,8 +31,10 @@ export class AndroidBuilder {
     const pubspecYaml = path.join(this.rootPath, 'pubspec.yaml');
 
     if (fs.existsSync(packageJson)) {
-      const content = fs.readFileSync(packageJson, 'utf-8');
-      if (content.includes('react-native')) return 'react-native';
+      try {
+        const content = fs.readFileSync(packageJson, 'utf-8');
+        if (content.includes('react-native')) return 'react-native';
+      } catch { /* ignore */ }
     }
     if (fs.existsSync(pubspecYaml)) return 'flutter';
     return 'native';
@@ -47,23 +52,22 @@ export class AndroidBuilder {
         execSync(installCmd, { cwd: this.rootPath, stdio: 'inherit', timeout: 300000 });
       }
 
-      const androidDir = path.join(this.rootPath, 'android');
+      // B5: Find android dir dynamically — it might not be named "android/"
+      const androidDir = this.findAndroidDir();
+      if (!androidDir) throw new Error('Android project directory not found (no gradlew in any subdir)');
+
       const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
 
-      // Make gradlew executable
       if (process.platform !== 'win32' && fs.existsSync(path.join(androidDir, 'gradlew'))) {
         execSync('chmod +x gradlew', { cwd: androidDir });
       }
 
+      // D11: Don't force New Architecture — let the project decide
       execSync(`${gradlew} assembleRelease`, {
         cwd: androidDir,
         stdio: 'inherit',
-        env: {
-          ...process.env,
-          // RN Gradle plugin needs to find react-native config from project root
-          RCT_NEW_ARCH_ENABLED: '1',
-        },
-        timeout: 600000, // 10 min max
+        env: { ...process.env },
+        timeout: 600000,
       });
 
       const apkPath = this.findApk();
@@ -83,10 +87,16 @@ export class AndroidBuilder {
       execSync('flutter build apk --release', {
         cwd: this.rootPath,
         stdio: 'inherit',
+        timeout: 600000, // D7: was missing timeout
       });
 
-      const apkPath = path.join(this.rootPath, 'build', 'app', 'outputs', 'flutter-apk', 'app-release.apk');
-      if (!fs.existsSync(apkPath)) throw new Error(`Flutter APK not found at ${apkPath}`);
+      // E3: check both standard and alternative Flutter output paths
+      const apkCandidates = [
+        path.join(this.rootPath, 'build', 'app', 'outputs', 'flutter-apk', 'app-release.apk'),
+        path.join(this.rootPath, 'build', 'app', 'outputs', 'apk', 'release', 'app-release.apk'),
+      ];
+      const apkPath = apkCandidates.find((p) => fs.existsSync(p)) || this.findApk();
+      if (!apkPath) throw new Error('Flutter APK not found after build');
 
       this.logger.log('Flutter APK built', { apkPath });
       return apkPath;
@@ -99,9 +109,19 @@ export class AndroidBuilder {
   private buildNativeAndroid(): string {
     try {
       this.logger.log('Building native Android APK with Gradle');
-      execSync('./gradlew assembleRelease', {
-        cwd: this.rootPath,
+
+      // B5: Find gradlew dynamically
+      const androidDir = this.findAndroidDir() || this.rootPath;
+      const gradlew = process.platform === 'win32' ? 'gradlew.bat' : './gradlew';
+
+      if (process.platform !== 'win32' && fs.existsSync(path.join(androidDir, 'gradlew'))) {
+        execSync('chmod +x gradlew', { cwd: androidDir });
+      }
+
+      execSync(`${gradlew} assembleRelease`, {
+        cwd: androidDir,
         stdio: 'inherit',
+        timeout: 600000,
       });
 
       const apkPath = this.findApk();
@@ -115,24 +135,60 @@ export class AndroidBuilder {
     }
   }
 
-  private findApk(): string | null {
-    const buildDir = path.join(this.rootPath, 'build');
-    const androidDir = path.join(this.rootPath, 'android');
+  // B5: Find android project dir — gradlew might be in "android/", a custom-named dir, or root
+  private findAndroidDir(): string | null {
+    // 1. Check root itself
+    if (fs.existsSync(path.join(this.rootPath, 'gradlew'))) return this.rootPath;
 
-    const searchPaths = [
-      path.join(buildDir, 'outputs', 'apk', 'release'),
-      path.join(buildDir, 'outputs', 'flutter-apk'),
-      path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'release'),
-    ];
-
-    for (const searchPath of searchPaths) {
-      if (fs.existsSync(searchPath)) {
-        const files = fs.readdirSync(searchPath);
-        const apk = files.find((f) => f.endsWith('.apk'));
-        if (apk) return path.join(searchPath, apk);
+    // 2. Scan all immediate subdirs
+    const skip = new Set(['node_modules', 'ios', 'build', 'dist', '.git', 'Pods']);
+    try {
+      for (const entry of fs.readdirSync(this.rootPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(this.rootPath, entry);
+        try {
+          if (fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'gradlew'))) {
+            return full;
+          }
+        } catch { /* ignore */ }
       }
-    }
+    } catch { /* ignore */ }
 
+    return null;
+  }
+
+  // E1: Broadly search for APK — don't rely on hardcoded paths
+  private findApk(): string | null {
+    const searchRoots = [this.rootPath];
+    // also search inside android/ or equivalent
+    const androidDir = this.findAndroidDir();
+    if (androidDir && androidDir !== this.rootPath) searchRoots.push(androidDir);
+
+    for (const searchRoot of searchRoots) {
+      const found = this.walkForApk(searchRoot, 0, 6);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  private walkForApk(dir: string, depth: number, maxDepth: number): string | null {
+    if (depth >= maxDepth) return null;
+    const skip = new Set(['node_modules', '.git', 'Pods', 'intermediates', 'tmp']);
+    try {
+      for (const entry of fs.readdirSync(dir)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(dir, entry);
+        try {
+          const stat = fs.statSync(full);
+          if (stat.isDirectory()) {
+            const found = this.walkForApk(full, depth + 1, maxDepth);
+            if (found) return found;
+          } else if (entry.endsWith('-release.apk') || (entry.endsWith('.apk') && dir.includes('release'))) {
+            return full;
+          }
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
     return null;
   }
 }

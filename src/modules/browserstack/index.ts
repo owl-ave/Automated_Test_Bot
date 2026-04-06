@@ -7,9 +7,20 @@ const logger = new Logger('BrowserStack');
 
 export async function runBrowserStack(context: PipelineContext): Promise<ModuleResult> {
   try {
-    const scenarios = context.scenariosBdd;
+    let scenarios = context.scenariosBdd;
+
+    // Auto-generate a minimal smoke test if no scenarios were produced
     if (!scenarios || scenarios.length === 0) {
-      return { moduleName: 'BrowserStack', status: 'warning', error: 'No scenarios to execute' };
+      logger.warn('No BDD scenarios — injecting minimal smoke test (app launch + main screen check)');
+      scenarios = [{
+        feature: 'Smoke Test',
+        scenario: 'App launches successfully',
+        steps: [
+          { keyword: 'Given', text: 'the app is launched' },
+          { keyword: 'Then', text: 'user should see "main_screen"' },
+        ],
+      }];
+      context.scenariosBdd = scenarios;
     }
 
     const executor = new TestExecutor();

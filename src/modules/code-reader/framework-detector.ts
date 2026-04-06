@@ -90,8 +90,8 @@ export class FrameworkDetector {
           confidence += 5;
           evidence.push('react-native-screens detected');
         }
-      } catch {
-        // invalid JSON
+      } catch (e) {
+        this.logger.warn('Failed to parse package.json', { path: packageJsonPath, error: String(e) });
       }
     }
 
@@ -103,8 +103,8 @@ export class FrameworkDetector {
           confidence += 10;
           evidence.push('app.json found');
         }
-      } catch {
-        // invalid JSON
+      } catch (e) {
+        this.logger.warn('Failed to parse app.json', { path: appJsonPath, error: String(e) });
       }
     }
 
@@ -114,9 +114,15 @@ export class FrameworkDetector {
       evidence.push('metro.config.js found');
     }
 
-    if (fs.existsSync(path.join(rootPath, 'android')) && fs.existsSync(path.join(rootPath, 'ios'))) {
+    // B10/B12: Award points if EITHER android OR ios folder exists (not both required)
+    const hasAndroidDir = fs.existsSync(path.join(rootPath, 'android'));
+    const hasIosDir = fs.existsSync(path.join(rootPath, 'ios'));
+    if (hasAndroidDir && hasIosDir) {
       confidence += 10;
       evidence.push('android/ and ios/ directories found');
+    } else if (hasAndroidDir || hasIosDir) {
+      confidence += 5;
+      evidence.push(`${hasAndroidDir ? 'android/' : 'ios/'} directory found`);
     }
 
     return {
@@ -133,31 +139,61 @@ export class FrameworkDetector {
   private checkFlutter(rootPath: string): FrameworkDetection {
     const evidence: string[] = [];
     let confidence = 0;
+    let flutterMobilePath = rootPath;
 
-    const pubspecPath = path.join(rootPath, 'pubspec.yaml');
-    if (fs.existsSync(pubspecPath)) {
-      const content = fs.readFileSync(pubspecPath, 'utf-8');
-      if (content.includes('flutter:')) {
-        confidence += 50;
-        evidence.push('Flutter SDK in pubspec.yaml');
+    // B7/B8: Check rootPath AND immediate subdirs for pubspec.yaml
+    const pubspecCandidates = [path.join(rootPath, 'pubspec.yaml')];
+    try {
+      for (const entry of fs.readdirSync(rootPath)) {
+        const sub = path.join(rootPath, entry);
+        try {
+          if (fs.statSync(sub).isDirectory() && !entry.startsWith('.') && entry !== 'node_modules') {
+            pubspecCandidates.push(path.join(sub, 'pubspec.yaml'));
+          }
+        } catch { /* ignore */ }
       }
-      if (content.includes('cupertino_icons')) {
-        confidence += 5;
-        evidence.push('cupertino_icons dependency');
-      }
+    } catch { /* ignore */ }
+
+    for (const pubspecPath of pubspecCandidates) {
+      if (!fs.existsSync(pubspecPath)) continue;
+      try {
+        const content = fs.readFileSync(pubspecPath, 'utf-8');
+        if (content.includes('flutter:')) {
+          confidence += 50;
+          evidence.push(`Flutter SDK in ${path.relative(rootPath, pubspecPath)}`);
+          flutterMobilePath = path.dirname(pubspecPath);
+        }
+        if (content.includes('cupertino_icons')) {
+          confidence += 5;
+          evidence.push('cupertino_icons dependency');
+        }
+      } catch { /* ignore */ }
     }
 
-    if (fs.existsSync(path.join(rootPath, 'lib', 'main.dart'))) {
+    const mobileRoot = flutterMobilePath;
+    if (fs.existsSync(path.join(mobileRoot, 'lib', 'main.dart'))) {
       confidence += 25;
       evidence.push('lib/main.dart entry point found');
+    } else {
+      // B7: any main.dart inside lib/ counts
+      const libDir = path.join(mobileRoot, 'lib');
+      if (fs.existsSync(libDir)) {
+        try {
+          const dartFiles = fs.readdirSync(libDir);
+          if (dartFiles.some((f) => f.endsWith('.dart'))) {
+            confidence += 10;
+            evidence.push('Dart files found in lib/');
+          }
+        } catch { /* ignore */ }
+      }
     }
 
-    if (fs.existsSync(path.join(rootPath, '.dart_tool')) || fs.existsSync(path.join(rootPath, '.flutter-plugins'))) {
+    if (fs.existsSync(path.join(mobileRoot, '.dart_tool')) || fs.existsSync(path.join(mobileRoot, '.flutter-plugins'))) {
       confidence += 10;
       evidence.push('Flutter tooling files found');
     }
 
-    const androidManifest = path.join(rootPath, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+    const androidManifest = path.join(mobileRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
     if (fs.existsSync(androidManifest)) {
       try {
         const content = fs.readFileSync(androidManifest, 'utf-8');
@@ -165,9 +201,7 @@ export class FrameworkDetector {
           confidence += 10;
           evidence.push('FlutterActivity in AndroidManifest.xml');
         }
-      } catch {
-        // ignore
-      }
+      } catch { /* ignore */ }
     }
 
     return {
@@ -176,7 +210,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Dart',
       buildSystem: 'flutter',
-      mobilePath: rootPath,
+      mobilePath: flutterMobilePath,
     };
   }
 
@@ -184,52 +218,91 @@ export class FrameworkDetector {
     const evidence: string[] = [];
     let confidence = 0;
     let subFramework: 'jetpack-compose' | 'xml-layouts' | undefined;
+    let kotlinMobilePath = rootPath;
 
-    const gradlePaths = [
-      path.join(rootPath, 'build.gradle'),
-      path.join(rootPath, 'build.gradle.kts'),
-      path.join(rootPath, 'app', 'build.gradle'),
-      path.join(rootPath, 'app', 'build.gradle.kts'),
-    ];
-
-    for (const gradlePath of gradlePaths) {
-      if (!fs.existsSync(gradlePath)) continue;
-      const content = fs.readFileSync(gradlePath, 'utf-8');
-
-      if (content.includes('kotlin') || content.includes('org.jetbrains.kotlin')) {
-        confidence += 30;
-        evidence.push(`Kotlin plugin in ${path.basename(gradlePath)}`);
+    // B4: Check root, app/, and all immediate subdirs for build.gradle
+    const gradleSearchDirs = [rootPath];
+    try {
+      for (const entry of fs.readdirSync(rootPath)) {
+        const sub = path.join(rootPath, entry);
+        try {
+          if (fs.statSync(sub).isDirectory() && !entry.startsWith('.') && entry !== 'node_modules' && entry !== 'build') {
+            gradleSearchDirs.push(sub);
+          }
+        } catch { /* ignore */ }
       }
-      if (content.includes('com.android.application')) {
+    } catch { /* ignore */ }
+
+    for (const searchDir of gradleSearchDirs) {
+      const gradlePaths = [
+        path.join(searchDir, 'build.gradle'),
+        path.join(searchDir, 'build.gradle.kts'),
+        path.join(searchDir, 'app', 'build.gradle'),
+        path.join(searchDir, 'app', 'build.gradle.kts'),
+      ];
+
+      for (const gradlePath of gradlePaths) {
+        if (!fs.existsSync(gradlePath)) continue;
+        try {
+          const content = fs.readFileSync(gradlePath, 'utf-8');
+          if (content.includes('kotlin') || content.includes('org.jetbrains.kotlin')) {
+            confidence += 30;
+            evidence.push(`Kotlin plugin in ${path.relative(rootPath, gradlePath)}`);
+            kotlinMobilePath = searchDir;
+          }
+          if (content.includes('com.android.application')) {
+            confidence += 20;
+            evidence.push('Android application plugin found');
+            kotlinMobilePath = searchDir;
+          }
+          if (content.includes('compose') || content.includes('androidx.compose')) {
+            confidence += 10;
+            subFramework = 'jetpack-compose';
+            evidence.push('Jetpack Compose dependency detected');
+          }
+        } catch { /* ignore */ }
+      }
+      if (confidence >= 50) break; // found a strong match, stop searching subdirs
+    }
+
+    // B5: Also check for gradlew in any subdir as a strong Android signal
+    if (confidence === 0) {
+      const gradlewDirs = gradleSearchDirs.filter((d) =>
+        fs.existsSync(path.join(d, 'gradlew')) || fs.existsSync(path.join(d, 'android', 'gradlew')),
+      );
+      if (gradlewDirs.length > 0) {
         confidence += 20;
-        evidence.push('Android application plugin found');
-      }
-      if (content.includes('compose') || content.includes('androidx.compose')) {
-        confidence += 10;
-        subFramework = 'jetpack-compose';
-        evidence.push('Jetpack Compose dependency detected');
+        evidence.push('gradlew found — Android project detected');
+        kotlinMobilePath = gradlewDirs[0];
       }
     }
 
     if (!subFramework) {
-      const resLayout = path.join(rootPath, 'app', 'src', 'main', 'res', 'layout');
-      if (fs.existsSync(resLayout)) {
-        try {
-          const xmlFiles = fs.readdirSync(resLayout).filter((f) => f.endsWith('.xml'));
-          if (xmlFiles.length > 0) {
-            subFramework = 'xml-layouts';
-            confidence += 5;
-            evidence.push(`${xmlFiles.length} XML layout files found`);
-          }
-        } catch {
-          // ignore
+      // Check app/src/main/res/layout AND any subdir equivalent
+      for (const searchDir of [kotlinMobilePath, rootPath]) {
+        const resLayout = path.join(searchDir, 'app', 'src', 'main', 'res', 'layout');
+        if (fs.existsSync(resLayout)) {
+          try {
+            const xmlFiles = fs.readdirSync(resLayout).filter((f) => f.endsWith('.xml'));
+            if (xmlFiles.length > 0) {
+              subFramework = 'xml-layouts';
+              confidence += 5;
+              evidence.push(`${xmlFiles.length} XML layout files found`);
+              break;
+            }
+          } catch { /* ignore */ }
         }
       }
     }
 
-    const srcMain = path.join(rootPath, 'app', 'src', 'main', 'java');
-    const srcKotlin = path.join(rootPath, 'app', 'src', 'main', 'kotlin');
-    if (fs.existsSync(srcMain) || fs.existsSync(srcKotlin)) {
+    // B11: Check multiple possible source dirs
+    const srcDirCandidates = [
+      path.join(kotlinMobilePath, 'app', 'src', 'main', 'java'),
+      path.join(kotlinMobilePath, 'app', 'src', 'main', 'kotlin'),
+      path.join(kotlinMobilePath, 'src', 'main', 'java'),
+      path.join(kotlinMobilePath, 'src', 'main', 'kotlin'),
+    ];
+    if (srcDirCandidates.some((d) => fs.existsSync(d))) {
       confidence += 10;
       evidence.push('Android source directories found');
     }
@@ -241,7 +314,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Kotlin',
       buildSystem: 'gradle',
-      mobilePath: rootPath,
+      mobilePath: kotlinMobilePath,
     };
   }
 
@@ -250,8 +323,9 @@ export class FrameworkDetector {
     let confidence = 0;
     let subFramework: 'swiftui' | 'storyboard' | undefined;
 
-    const xcodeprojFiles = this.findFiles(rootPath, /\.xcodeproj$/, 2);
-    const xcworkspaceFiles = this.findFiles(rootPath, /\.xcworkspace$/, 2);
+    // B3: search 3 levels deep — xcodeproj can be at root, ios/, or a named subfolder
+    const xcodeprojFiles = this.findFiles(rootPath, /\.xcodeproj$/, 3);
+    const xcworkspaceFiles = this.findFiles(rootPath, /\.xcworkspace$/, 3);
 
     if (xcodeprojFiles.length > 0) {
       confidence += 30;
@@ -302,6 +376,10 @@ export class FrameworkDetector {
       }
     }
 
+    // G4: mobilePath = dir where Xcode project lives, not necessarily rootPath
+    const xcodeFile = xcworkspaceFiles[0] || xcodeprojFiles[0];
+    const swiftMobilePath = xcodeFile ? path.dirname(xcodeFile) : rootPath;
+
     return {
       framework: 'swift',
       subFramework,
@@ -309,7 +387,7 @@ export class FrameworkDetector {
       evidence,
       language: 'Swift',
       buildSystem: 'xcode',
-      mobilePath: rootPath,
+      mobilePath: swiftMobilePath,
     };
   }
 
@@ -354,10 +432,12 @@ export class FrameworkDetector {
         const fullPath = path.join(dir, entry);
         try {
           const stat = fs.statSync(fullPath);
-          if (stat.isDirectory()) {
-            results.push(...this.findFiles(fullPath, pattern, maxDepth, currentDepth + 1));
-          } else if (pattern.test(entry)) {
+          // Check pattern first — .xcodeproj and .xcworkspace are directories on macOS
+          // but should be matched as files, not recursed into
+          if (pattern.test(entry)) {
             results.push(fullPath);
+          } else if (stat.isDirectory()) {
+            results.push(...this.findFiles(fullPath, pattern, maxDepth, currentDepth + 1));
           }
         } catch {
           // ignore permission errors

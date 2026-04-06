@@ -19,9 +19,8 @@ interface HealingSummary {
 export async function runSelfHealer(context: PipelineContext): Promise<ModuleResult> {
   try {
     const testResults = context.testResults;
-    if (!testResults || testResults.length === 0) {
-      return { moduleName: 'SelfHealer', status: 'warning', error: 'No test results to heal' };
-    }
+    // Don't return early — even without test results we can still update
+    // feature files from the PR diff (keeps tests up-to-date with code changes)
 
     const locatorHealer = new LocatorHealer();
     const flowAdapter = new FlowAdapter();
@@ -37,8 +36,11 @@ export async function runSelfHealer(context: PipelineContext): Promise<ModuleRes
       featureUpdates: [],
     };
 
-    // Process failed tests
-    const failedTests = testResults.filter((r) => r.status === 'fail');
+    // Process failed tests (only when test results are available)
+    const failedTests = (testResults ?? []).filter((r) => r.status === 'fail');
+    if (!testResults || testResults.length === 0) {
+      logger.log('No test results — skipping locator healing, will still update feature files from diff');
+    }
     logger.log('Processing failed tests for self-healing', { count: failedTests.length });
 
     for (const failure of failedTests) {
@@ -107,10 +109,12 @@ export async function runSelfHealer(context: PipelineContext): Promise<ModuleRes
       featuresUpdated: summary.featuresUpdated,
     });
 
+    const didWork = summary.locatorsHealed > 0 || summary.flowsAdapted > 0 || summary.featuresUpdated > 0;
+    const hadTestResults = testResults && testResults.length > 0;
+
     return {
       moduleName: 'SelfHealer',
-      status:
-        summary.locatorsHealed > 0 || summary.flowsAdapted > 0 || summary.featuresUpdated > 0 ? 'success' : 'warning',
+      status: didWork ? 'success' : hadTestResults ? 'warning' : 'success',
       data: summary,
     };
   } catch (error) {

@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import { PipelineContext, ModuleResult } from '../../types';
 import { Logger } from '../../utils/logger';
 import { TestRunStorage, TestRunRecord } from './storage';
@@ -10,13 +12,51 @@ export { VectorSearch } from './vector-search';
 export { FlakyDetector } from './flaky-detector';
 export { FeedbackLoop } from './feedback-loop';
 
+async function saveToJsonFile(context: PipelineContext, logger: Logger): Promise<ModuleResult> {
+  try {
+    const testResults = context.testResults ?? [];
+    const storageDir = path.resolve('test-results');
+    if (!fs.existsSync(storageDir)) fs.mkdirSync(storageDir, { recursive: true });
+
+    const filePath = path.join(storageDir, 'knowledge-base.json');
+    const existing = fs.existsSync(filePath)
+      ? JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+      : { runs: [] };
+
+    const newRuns = testResults.map((r) => ({
+      prNumber: context.prNumber,
+      scenario: r.scenario,
+      device: r.device,
+      status: r.status,
+      duration: r.duration,
+      failureReason: r.error,
+      timestamp: new Date().toISOString(),
+    }));
+
+    existing.runs.push(...newRuns);
+    // Keep last 500 runs to avoid unbounded growth
+    if (existing.runs.length > 500) existing.runs = existing.runs.slice(-500);
+    fs.writeFileSync(filePath, JSON.stringify(existing, null, 2), 'utf-8');
+
+    logger.log('Knowledge base saved to local JSON file', { path: filePath, savedRuns: newRuns.length });
+    return {
+      moduleName: 'knowledge-base',
+      status: 'success',
+      data: { savedRuns: newRuns.length, storage: 'file', path: filePath },
+    };
+  } catch (err) {
+    logger.error('JSON file fallback failed', err);
+    return { moduleName: 'knowledge-base', status: 'error', error: String(err) };
+  }
+}
+
 export async function runKnowledgeBase(context: PipelineContext): Promise<ModuleResult> {
   const logger = new Logger('KnowledgeBase');
   const databaseUrl = process.env.DATABASE_URL;
 
   if (!databaseUrl) {
-    logger.warn('DATABASE_URL not set — skipping knowledge base persistence');
-    return { moduleName: 'knowledge-base', status: 'warning', data: { message: 'No database configured' } };
+    logger.warn('DATABASE_URL not set — falling back to local JSON file storage');
+    return saveToJsonFile(context, logger);
   }
 
   const storage = new TestRunStorage(databaseUrl);

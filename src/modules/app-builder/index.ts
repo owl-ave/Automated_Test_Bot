@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as path from 'path';
 import { PipelineContext, ModuleResult } from '../../types';
 import { AndroidBuilder } from './android-builder';
@@ -60,34 +61,26 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
     const framework = context.codeAnalysis?.framework;
 
     if (!buildPath || buildPath === context.targetPath) {
-      // Double check — no mobilePath means CodeReader didn't find a mobile project
-      const fs = await import('fs');
-      const hasGradlew = fs.existsSync(path.join(buildPath, 'gradlew')) ||
-                         fs.existsSync(path.join(buildPath, 'android', 'gradlew'));
-      const hasXcodeProj = fs.readdirSync(buildPath).some((f: string) =>
-        f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj'));
-      const hasPubspec = fs.existsSync(path.join(buildPath, 'pubspec.yaml'));
-      const hasReactNative = fs.existsSync(path.join(buildPath, 'package.json')) &&
-        fs.readFileSync(path.join(buildPath, 'package.json'), 'utf-8').includes('react-native');
-
-      if (!hasGradlew && !hasXcodeProj && !hasPubspec && !hasReactNative) {
+      // mobilePath not set — CodeReader didn't find a distinct mobile subdir.
+      // Do a broader check before giving up.
+      if (!hasMobileProject(buildPath)) {
         logger.warn('No mobile project detected in target repo — skipping app build');
         return { moduleName: 'AppBuilder', status: 'warning', error: 'No mobile project found in target repo' };
       }
     }
 
-    // Determine which platforms to build based on detected framework
-    // Swift-only → iOS only, Kotlin-only → Android only, cross-platform → both
+    // Determine which platforms to build:
+    // Swift-only → iOS, Kotlin-only → Android, anything else → both
     const shouldBuildAndroid = framework !== 'swift';
     const shouldBuildIos = framework !== 'kotlin';
 
     logger.log('Building from mobile path', { buildPath, framework, android: shouldBuildAndroid, ios: shouldBuildIos });
 
-    // Build Android
+    // Build Android — G1: pass context framework to builder
     if (shouldBuildAndroid) {
       try {
         logger.log('Starting Android build');
-        const androidBuilder = new AndroidBuilder(buildPath);
+        const androidBuilder = new AndroidBuilder(buildPath, framework);
         const androidApkPath = await androidBuilder.build();
 
         logger.log('Android APK built, uploading to BrowserStack', { apkPath: androidApkPath });
@@ -105,11 +98,11 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
       logger.log('Skipping Android build — Swift/iOS-only project detected');
     }
 
-    // Build iOS
+    // Build iOS — G1: pass context framework to builder
     if (shouldBuildIos) {
       try {
         logger.log('Starting iOS build');
-        const iosBuilder = new IosBuilder(buildPath);
+        const iosBuilder = new IosBuilder(buildPath, framework);
         const iosIpaPath = await iosBuilder.build();
 
         logger.log('iOS IPA built, uploading to BrowserStack', { ipaPath: iosIpaPath });
@@ -139,4 +132,79 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
     logger.error('App build failed', error);
     return { moduleName: 'AppBuilder', status: 'error', error: String(error) };
   }
+}
+
+/**
+ * Broadly checks if a directory contains a mobile project.
+ * Scans root + all immediate subdirectories so non-standard folder names are found.
+ */
+function hasMobileProject(buildPath: string): boolean {
+  const skip = new Set(['node_modules', 'Pods', 'build', 'dist', '.git']);
+
+  // B5: Scan root + immediate subdirs for gradlew
+  const hasGradlew = (() => {
+    if (fs.existsSync(path.join(buildPath, 'gradlew'))) return true;
+    try {
+      for (const entry of fs.readdirSync(buildPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(buildPath, entry);
+        try {
+          if (fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'gradlew'))) return true;
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return false;
+  })();
+
+  // B2/B3: Scan root + immediate subdirs for .xcodeproj/.xcworkspace
+  const hasXcodeProj = (() => {
+    const dirsToSearch = [buildPath];
+    try {
+      for (const entry of fs.readdirSync(buildPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(buildPath, entry);
+        try { if (fs.statSync(full).isDirectory()) dirsToSearch.push(full); } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return dirsToSearch.some((dir) => {
+      try { return fs.readdirSync(dir).some((f) => f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj')); }
+      catch { return false; }
+    });
+  })();
+
+  // B8: Scan root + immediate subdirs for pubspec.yaml
+  const hasPubspec = (() => {
+    if (fs.existsSync(path.join(buildPath, 'pubspec.yaml'))) return true;
+    try {
+      for (const entry of fs.readdirSync(buildPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(buildPath, entry);
+        try {
+          if (fs.statSync(full).isDirectory() && fs.existsSync(path.join(full, 'pubspec.yaml'))) return true;
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return false;
+  })();
+
+  // B6: React Native — check package.json in root and immediate subdirs
+  const hasReactNative = (() => {
+    const candidates = [path.join(buildPath, 'package.json')];
+    try {
+      for (const entry of fs.readdirSync(buildPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(buildPath, entry);
+        try {
+          if (fs.statSync(full).isDirectory()) candidates.push(path.join(full, 'package.json'));
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
+    return candidates.some((pkgPath) => {
+      if (!fs.existsSync(pkgPath)) return false;
+      try { return fs.readFileSync(pkgPath, 'utf-8').includes('react-native'); }
+      catch { return false; }
+    });
+  })();
+
+  return hasGradlew || hasXcodeProj || hasPubspec || hasReactNative;
 }

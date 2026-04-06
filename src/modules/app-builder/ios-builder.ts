@@ -6,13 +6,16 @@ import { Logger } from '../../utils/logger';
 export class IosBuilder {
   private logger = new Logger('IosBuilder');
   private rootPath: string;
+  private contextFramework: string | undefined;
 
-  constructor(rootPath: string) {
+  constructor(rootPath: string, contextFramework?: string) {
     this.rootPath = rootPath;
+    this.contextFramework = contextFramework;
   }
 
   async build(): Promise<string> {
-    const framework = this.detectFramework();
+    // G1: Use framework from pipeline context first, fall back to local detection
+    const framework = this.contextFramework || this.detectFramework();
 
     if (framework === 'react-native') {
       return this.buildReactNative();
@@ -28,8 +31,10 @@ export class IosBuilder {
     const pubspecYaml = path.join(this.rootPath, 'pubspec.yaml');
 
     if (fs.existsSync(packageJson)) {
-      const content = fs.readFileSync(packageJson, 'utf-8');
-      if (content.includes('react-native')) return 'react-native';
+      try {
+        const content = fs.readFileSync(packageJson, 'utf-8');
+        if (content.includes('react-native')) return 'react-native';
+      } catch { /* ignore */ }
     }
     if (fs.existsSync(pubspecYaml)) return 'flutter';
     return 'native';
@@ -47,17 +52,24 @@ export class IosBuilder {
         execSync(installCmd, { cwd: this.rootPath, stdio: 'inherit', timeout: 300000 });
       }
 
-      const iosDir = path.join(this.rootPath, 'ios');
+      // B3: Find ios dir dynamically — might not be named "ios/"
+      const iosDir = this.findIosDir();
+      if (!iosDir) throw new Error('iOS project directory not found in any subfolder');
 
       // Install pods if not already installed
       if (!fs.existsSync(path.join(iosDir, 'Pods'))) {
         this.logger.log('Installing CocoaPods dependencies');
-        execSync('bundle exec pod install || pod install', { cwd: iosDir, stdio: 'inherit', shell: '/bin/bash' as any });
+        // D6: Add timeout to pod install
+        execSync('bundle exec pod install || pod install', {
+          cwd: iosDir,
+          stdio: 'inherit',
+          shell: '/bin/bash' as any,
+          timeout: 300000,
+        });
       }
 
-      // Dynamically detect workspace and scheme
       const workspaceFile = this.findWorkspaceOrProject();
-      if (!workspaceFile) throw new Error('iOS workspace or project not found in ios/ directory');
+      if (!workspaceFile) throw new Error('iOS workspace or project not found');
 
       const isWorkspace = workspaceFile.endsWith('.xcworkspace');
       const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
@@ -70,29 +82,13 @@ export class IosBuilder {
         `-destination "generic/platform=iOS" ` +
         `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
         `build`,
-        {
-          cwd: this.rootPath,
-          stdio: 'inherit',
-          timeout: 600000,
-        },
+        { cwd: this.rootPath, stdio: 'inherit', timeout: 600000 },
       );
 
-      // Package .app into .ipa
       const appPath = this.findApp(derivedDataPath);
       if (!appPath) throw new Error('.app not found after build');
 
-      const ipaDir = path.join(this.rootPath, 'build', 'ipa');
-      const payloadDir = path.join(ipaDir, 'Payload');
-      fs.mkdirSync(payloadDir, { recursive: true });
-      execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
-      const appName = path.basename(appPath, '.app');
-      const ipaPath = path.join(ipaDir, `${appName}.ipa`);
-      execSync(`cd "${ipaDir}" && zip -r "${ipaPath}" Payload`, { stdio: 'inherit' });
-
-      if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
-
-      this.logger.log('React Native IPA built', { ipaPath });
-      return ipaPath;
+      return this.packageIpa(appPath, path.join(this.rootPath, 'build', 'ipa'));
     } catch (error: any) {
       this.logger.error('React Native iOS build failed', { message: error?.message || String(error) });
       throw error;
@@ -105,13 +101,40 @@ export class IosBuilder {
       execSync('flutter build ipa --release', {
         cwd: this.rootPath,
         stdio: 'inherit',
+        timeout: 600000, // D8: was missing timeout
       });
 
-      const ipaPath = path.join(this.rootPath, 'build', 'ios', 'ipa', 'app.ipa');
-      if (!fs.existsSync(ipaPath)) throw new Error(`Flutter IPA not found at ${ipaPath}`);
+      // E4: check multiple possible Flutter IPA output paths
+      const ipaCandidates = [
+        path.join(this.rootPath, 'build', 'ios', 'ipa', 'app.ipa'),
+        path.join(this.rootPath, 'build', 'ios', 'ipa'),
+        path.join(this.rootPath, 'build', 'ios', 'archive'),
+      ];
 
-      this.logger.log('Flutter IPA built', { ipaPath });
-      return ipaPath;
+      // Try known path first
+      const directPath = path.join(this.rootPath, 'build', 'ios', 'ipa', 'app.ipa');
+      if (fs.existsSync(directPath)) {
+        this.logger.log('Flutter IPA built', { ipaPath: directPath });
+        return directPath;
+      }
+
+      // Scan build/ios/ipa/ for any .ipa file
+      for (const candidate of ipaCandidates) {
+        if (!fs.existsSync(candidate)) continue;
+        try {
+          const stat = fs.statSync(candidate);
+          if (stat.isDirectory()) {
+            const ipa = fs.readdirSync(candidate).find((f) => f.endsWith('.ipa'));
+            if (ipa) {
+              const ipaPath = path.join(candidate, ipa);
+              this.logger.log('Flutter IPA built', { ipaPath });
+              return ipaPath;
+            }
+          }
+        } catch { /* ignore */ }
+      }
+
+      throw new Error('Flutter IPA not found after build — checked build/ios/ipa/');
     } catch (error: any) {
       this.logger.error('Flutter iOS build failed', { message: error?.message || String(error) });
       throw error;
@@ -140,10 +163,11 @@ export class IosBuilder {
           : null;
       if (podfilePath && !fs.existsSync(path.join(podfilePath, 'Pods'))) {
         this.logger.log('Installing CocoaPods dependencies');
-        this.exec(`pod install --repo-update`, podfilePath);
+        // D6: timeout on pod install
+        this.exec('pod install --repo-update', podfilePath, 300000);
       }
 
-      // List available schemes
+      // List available schemes — D9: resolve actual scheme name
       let resolvedScheme = schemeName;
       try {
         const schemesOutput = execSync(
@@ -162,17 +186,16 @@ export class IosBuilder {
       }
 
       // Resolve Swift Package Manager dependencies
-      this.logger.log('Resolving package dependencies');
       try {
         this.exec(
           `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" -resolvePackageDependencies`,
           projectDir,
+          120000,
         );
       } catch {
         this.logger.warn('SPM resolve failed — continuing (may not use SPM)');
       }
 
-      // Build .app (no code signing required for BrowserStack)
       const derivedDataPath = path.join(projectDir, 'build', 'DerivedData');
       this.logger.log('Starting xcodebuild', { scheme: resolvedScheme, derivedDataPath });
       this.exec(
@@ -180,32 +203,32 @@ export class IosBuilder {
         `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
         `-destination "generic/platform=iOS Simulator" ` +
         `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
-        `ONLY_ACTIVE_ARCH=NO ` +
-        `build`,
+        `ONLY_ACTIVE_ARCH=NO build`,
         projectDir,
         600000,
       );
 
-      // Find .app and package into .ipa
       const appPath = this.findApp(derivedDataPath);
       if (!appPath) throw new Error('.app not found after xcodebuild — check build output above');
 
-      const ipaDir = path.join(projectDir, 'build', 'ipa');
-      const payloadDir = path.join(ipaDir, 'Payload');
-      fs.mkdirSync(payloadDir, { recursive: true });
-      execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
-      const appName = path.basename(appPath, '.app');
-      const ipaPath = path.join(ipaDir, `${appName}.ipa`);
-      execSync(`cd "${ipaDir}" && zip -r "${ipaPath}" Payload`, { stdio: 'inherit' });
-
-      if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
-
-      this.logger.log('Native iOS IPA built', { ipaPath });
-      return ipaPath;
+      return this.packageIpa(appPath, path.join(projectDir, 'build', 'ipa'));
     } catch (error: any) {
       this.logger.error('Native iOS build failed', { message: error?.message || String(error) });
       throw error;
     }
+  }
+
+  /** Package a .app bundle into a .ipa file */
+  private packageIpa(appPath: string, ipaDir: string): string {
+    const payloadDir = path.join(ipaDir, 'Payload');
+    fs.mkdirSync(payloadDir, { recursive: true });
+    execSync(`cp -R "${appPath}" "${payloadDir}/"`, { stdio: 'inherit' });
+    const appName = path.basename(appPath, '.app');
+    const ipaPath = path.join(ipaDir, `${appName}.ipa`);
+    execSync(`cd "${ipaDir}" && zip -r "${ipaPath}" Payload`, { stdio: 'inherit' });
+    if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
+    this.logger.log('IPA packaged', { ipaPath });
+    return ipaPath;
   }
 
   /** Run a command with output captured and logged on failure */
@@ -219,32 +242,63 @@ export class IosBuilder {
     }
   }
 
-  private findWorkspaceOrProject(): string | null {
-    // Search root first
-    const rootMatch = this.findXcodeFiles(this.rootPath);
-    if (rootMatch) return rootMatch;
+  // B3: Find ios project dir — might be named anything, not just "ios/"
+  private findIosDir(): string | null {
+    const skip = new Set(['node_modules', 'android', 'build', 'dist', '.git', 'Pods']);
 
-    // Search one level deep
-    const entries = fs.readdirSync(this.rootPath, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'build') continue;
-      const subMatch = this.findXcodeFiles(path.join(this.rootPath, entry.name));
-      if (subMatch) return subMatch;
-    }
+    // Scan all immediate subdirs for Podfile or .xcodeproj/.xcworkspace
+    try {
+      for (const entry of fs.readdirSync(this.rootPath)) {
+        if (skip.has(entry) || entry.startsWith('.')) continue;
+        const full = path.join(this.rootPath, entry);
+        try {
+          if (!fs.statSync(full).isDirectory()) continue;
+          const files = fs.readdirSync(full);
+          if (
+            files.some((f) => f.endsWith('.xcworkspace') || f.endsWith('.xcodeproj') || f === 'Podfile')
+          ) {
+            return full;
+          }
+        } catch { /* ignore */ }
+      }
+    } catch { /* ignore */ }
 
     return null;
   }
 
-  private findXcodeFiles(dir: string): string | null {
+  // B3: Search root + 2 levels deep for .xcworkspace/.xcodeproj (any folder name)
+  private findWorkspaceOrProject(): string | null {
+    return this.findXcodeFiles(this.rootPath, 0, 2);
+  }
+
+  private findXcodeFiles(dir: string, depth: number, maxDepth: number): string | null {
     if (!fs.existsSync(dir)) return null;
-    const files = fs.readdirSync(dir);
+    const skip = new Set(['node_modules', 'build', 'dist', '.git', 'Pods', 'DerivedData']);
 
-    // Prefer workspace (usually has CocoaPods/SPM configured)
-    const workspace = files.find((f) => f.endsWith('.xcworkspace'));
-    if (workspace) return path.join(dir, workspace);
+    try {
+      const files = fs.readdirSync(dir);
 
-    const project = files.find((f) => f.endsWith('.xcodeproj'));
-    if (project) return path.join(dir, project);
+      // Prefer workspace over project at this level
+      const workspace = files.find((f) => f.endsWith('.xcworkspace') && !f.includes('project.xcworkspace'));
+      if (workspace) return path.join(dir, workspace);
+
+      const project = files.find((f) => f.endsWith('.xcodeproj'));
+      if (project) return path.join(dir, project);
+
+      // Recurse into subdirectories
+      if (depth < maxDepth) {
+        for (const entry of files) {
+          if (skip.has(entry) || entry.startsWith('.')) continue;
+          const full = path.join(dir, entry);
+          try {
+            if (fs.statSync(full).isDirectory()) {
+              const found = this.findXcodeFiles(full, depth + 1, maxDepth);
+              if (found) return found;
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    } catch { /* ignore */ }
 
     return null;
   }
@@ -255,25 +309,13 @@ export class IosBuilder {
 
     for (const config of fs.readdirSync(productsDir)) {
       const configDir = path.join(productsDir, config);
-      if (!fs.statSync(configDir).isDirectory()) continue;
-      const entries = fs.readdirSync(configDir);
-      const app = entries.find((f) => f.endsWith('.app'));
-      if (app) return path.join(configDir, app);
+      try {
+        if (!fs.statSync(configDir).isDirectory()) continue;
+        const entries = fs.readdirSync(configDir);
+        const app = entries.find((f) => f.endsWith('.app'));
+        if (app) return path.join(configDir, app);
+      } catch { /* ignore */ }
     }
-    return null;
-  }
-
-  private findIpa(): string | null {
-    const searchPaths = [path.join(this.rootPath, 'build', 'ipa'), path.join(this.rootPath, 'build', 'ios', 'ipa')];
-
-    for (const searchPath of searchPaths) {
-      if (fs.existsSync(searchPath)) {
-        const files = fs.readdirSync(searchPath);
-        const ipa = files.find((f) => f.endsWith('.ipa'));
-        if (ipa) return path.join(searchPath, ipa);
-      }
-    }
-
     return null;
   }
 }

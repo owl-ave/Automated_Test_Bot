@@ -20,23 +20,41 @@ export class BrowserStackUploader {
     this.accessKey = accessKey;
   }
 
+  // F6: Retry with exponential backoff on transient network/server errors
+  private async withRetry<T>(operation: () => Promise<T>, label: string, maxAttempts = 3): Promise<T> {
+    let delayMs = 2000;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        const status = error?.response?.status;
+        const isTransient = !status || status >= 500 || status === 429;
+        if (attempt === maxAttempts || !isTransient) {
+          this.logger.error(`${label} failed after ${attempt} attempt(s)`, error);
+          throw error;
+        }
+        this.logger.warn(`${label} attempt ${attempt} failed (${status ?? 'network error'}), retrying in ${delayMs}ms`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        delayMs *= 2;
+      }
+    }
+    throw new Error(`${label} exceeded max retries`);
+  }
+
   async uploadApp(appPath: string, customId: string): Promise<BrowserStackUploadResponse> {
     if (!fs.existsSync(appPath)) {
       throw new Error(`App file not found: ${appPath}`);
     }
 
-    try {
-      this.logger.log('Uploading app to BrowserStack', { appPath, customId });
+    this.logger.log('Uploading app to BrowserStack', { appPath, customId });
 
+    return this.withRetry(async () => {
       const form = new FormData();
       form.append('file', fs.createReadStream(appPath));
       form.append('custom_id', customId);
 
       const response = await axios.post<BrowserStackUploadResponse>(`${this.baseUrl}/upload`, form, {
-        auth: {
-          username: this.username,
-          password: this.accessKey,
-        },
+        auth: { username: this.username, password: this.accessKey },
         headers: form.getHeaders(),
         maxContentLength: Infinity,
         maxBodyLength: Infinity,
@@ -44,16 +62,13 @@ export class BrowserStackUploader {
 
       this.logger.log('App uploaded successfully', { app_url: response.data.app_url });
       return response.data;
-    } catch (error) {
-      this.logger.error('Failed to upload app to BrowserStack', error);
-      throw error;
-    }
+    }, 'uploadApp');
   }
 
   async uploadAppUrl(publicUrl: string, customId: string): Promise<BrowserStackUploadResponse> {
-    try {
-      this.logger.log('Uploading app to BrowserStack via URL', { url: publicUrl, customId });
+    this.logger.log('Uploading app to BrowserStack via URL', { url: publicUrl, customId });
 
+    return this.withRetry(async () => {
       const response = await axios.post<BrowserStackUploadResponse>(
         `${this.baseUrl}/upload`,
         { url: publicUrl, custom_id: customId },
@@ -65,10 +80,7 @@ export class BrowserStackUploader {
 
       this.logger.log('App uploaded via URL', { app_url: response.data.app_url });
       return response.data;
-    } catch (error) {
-      this.logger.error('Failed to upload app via URL', error);
-      throw error;
-    }
+    }, 'uploadAppUrl');
   }
 
   async deleteApp(customId: string): Promise<void> {

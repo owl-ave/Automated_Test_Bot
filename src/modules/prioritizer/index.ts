@@ -12,8 +12,31 @@ export async function runPrioritizer(context: PipelineContext): Promise<ModuleRe
   try {
     const scenarios = context.scenariosBdd;
     if (!scenarios || scenarios.length === 0) {
-      logger.warn('No scenarios to prioritize');
-      return { moduleName: 'prioritizer', status: 'warning', data: { message: 'No scenarios provided' } };
+      // No BDD scenarios yet — still do file-level risk scoring on diffFiles so
+      // the reporter can show which changed areas are highest risk
+      logger.log('No BDD scenarios — running diff-based file risk scoring as fallback');
+      const prioritizedFiles = (context.diffFiles || [])
+        .map((f) => {
+          const isUi = /screen|activity|fragment|composable|viewcontroller|view/i.test(f.path);
+          const isAuth = /auth|login|signup|password/i.test(f.path);
+          const isPayment = /pay|checkout|billing|cart/i.test(f.path);
+          const riskScore = (isUi ? 30 : 0) + (isAuth ? 40 : 0) + (isPayment ? 40 : 0) +
+            Math.min(f.additions + f.deletions, 30);
+          return { file: f.path, riskScore, changeSize: f.additions + f.deletions };
+        })
+        .sort((a, b) => b.riskScore - a.riskScore);
+
+      return {
+        moduleName: 'prioritizer',
+        status: 'success',
+        data: {
+          prioritizedScenarios: [],
+          prioritizedFiles,
+          scores: {},
+          totalScenarios: 0,
+          note: 'No BDD scenarios available — showing file-level risk scores instead',
+        },
+      };
     }
 
     const scorer = new RiskScorer();
