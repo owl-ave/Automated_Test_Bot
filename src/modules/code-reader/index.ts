@@ -53,8 +53,8 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
       repoPath = cloneDir;
     }
 
-    // Parse PR diff
-    const diffParser = new DiffParser();
+    // Parse PR diff — run git commands in the target repo, not the bot directory
+    const diffParser = new DiffParser(repoPath);
     const diffFiles = diffParser.parsePRDiff('main', context.branch);
 
     // If git diff failed (no git repo or same branch), try GitHub API
@@ -82,9 +82,10 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
       }
     }
 
-    // Scan repo structure
+    // Scan repo structure — pass diff file paths so framework can be detected from them
+    // if the filesystem scan returns nothing (e.g. brand-new repo with all files "added")
     const scanner = new RepoScanner(repoPath);
-    const codeAnalysis = scanner.scan();
+    const codeAnalysis = scanner.scan(diffFiles.map((f) => f.path));
 
     context.diffFiles = diffFiles;
     context.codeAnalysis = codeAnalysis;

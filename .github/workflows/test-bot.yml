@@ -82,19 +82,16 @@ jobs:
             echo "android=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # Native iOS (Swift)
-          if ls target/*.xcodeproj 1>/dev/null 2>&1 || ls target/*.xcworkspace 1>/dev/null 2>&1; then
+          # Native iOS (Swift) — use find to handle xcodeproj/xcworkspace at any depth ≤ 3
+          if find target -maxdepth 3 \( -name "*.xcodeproj" -o -name "*.xcworkspace" \) 2>/dev/null | grep -q .; then
             echo "framework=swift" >> "$GITHUB_OUTPUT"
             echo "ios=true" >> "$GITHUB_OUTPUT"
           fi
 
-          # Check subdirectories (1 level deep)
+          # Check subdirectories (1 level deep) for Android
           for dir in target/*/; do
             if [ -f "${dir}build.gradle" ] || [ -f "${dir}build.gradle.kts" ]; then
               echo "android=true" >> "$GITHUB_OUTPUT"
-            fi
-            if ls "${dir}"*.xcodeproj 1>/dev/null 2>&1 || ls "${dir}"*.xcworkspace 1>/dev/null 2>&1; then
-              echo "ios=true" >> "$GITHUB_OUTPUT"
             fi
           done
 
@@ -212,7 +209,10 @@ jobs:
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_APP_INSTALLATION_ID: ${{ steps.generate-token.outputs.installation-id }}
           TARGET_REPO: ${{ github.event.inputs.repo }}
-          TARGET_BRANCH: ${{ github.event.inputs.branch }}
+          # When testing a specific PR, leave TARGET_BRANCH empty so the pipeline fetches
+          # the real head branch from the GitHub API (pr.head.ref). Only pass the branch
+          # input when running against a branch directly (pr_number == 0).
+          TARGET_BRANCH: ${{ github.event.inputs.pr_number == '0' && github.event.inputs.branch || '' }}
           TARGET_PATH: ${{ github.workspace }}/target
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_AUTH_TOKEN }}
           BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}

@@ -391,6 +391,66 @@ export class FrameworkDetector {
     };
   }
 
+  /**
+   * Detect framework from PR diff file paths — used as fallback when filesystem scan returns nothing.
+   * Handles cases where the target repo is a new iOS/Android project being added from scratch.
+   */
+  detectFromFilePaths(filePaths: string[], rootPath: string): FrameworkDetection | null {
+    let swiftScore = 0, kotlinScore = 0, flutterScore = 0;
+    let swiftMobilePath = rootPath;
+
+    for (const p of filePaths) {
+      const basename = path.basename(p);
+      const lower = p.toLowerCase();
+
+      // .xcodeproj match (may be a path segment like ios/Nola.xcodeproj/project.pbxproj)
+      const xcodeprojMatch = p.match(/^(.*?\.xcodeproj)(\/|$)/i);
+      if (xcodeprojMatch) {
+        swiftScore += 30;
+        // mobilePath = directory containing the .xcodeproj bundle
+        swiftMobilePath = path.join(rootPath, path.dirname(xcodeprojMatch[1]));
+      } else if (/\.xcworkspace(\/|$)/i.test(p)) {
+        swiftScore += 10;
+      } else if (lower.endsWith('.swift')) {
+        swiftScore = Math.max(swiftScore, 1) + 5; // cap contribution
+      } else if (lower.endsWith('.storyboard') || lower.endsWith('.xib')) {
+        swiftScore += 3;
+      } else if (basename === 'Podfile') {
+        swiftScore += 15;
+      } else if (basename === 'build.gradle' || basename === 'build.gradle.kts') {
+        kotlinScore += 30;
+      } else if (lower.endsWith('.kt') || lower.endsWith('.kts')) {
+        kotlinScore += 5;
+      } else if (basename === 'gradlew') {
+        kotlinScore += 20;
+      } else if (basename === 'pubspec.yaml') {
+        flutterScore += 50;
+      } else if (lower.endsWith('.dart')) {
+        flutterScore += 10;
+      }
+    }
+
+    const candidates = [
+      { framework: 'swift' as const, score: swiftScore, mobilePath: swiftMobilePath, language: 'Swift', buildSystem: 'xcode' },
+      { framework: 'kotlin' as const, score: kotlinScore, mobilePath: rootPath, language: 'Kotlin', buildSystem: 'gradle' },
+      { framework: 'flutter' as const, score: flutterScore, mobilePath: rootPath, language: 'Dart', buildSystem: 'flutter' },
+    ];
+
+    const best = candidates.reduce((a, b) => (a.score > b.score ? a : b));
+    if (best.score === 0) return null;
+
+    this.logger.log('Framework detected from diff file paths', { framework: best.framework, confidence: best.score });
+
+    return {
+      framework: best.framework,
+      confidence: Math.min(best.score, 100),
+      evidence: [`Detected from ${filePaths.length} PR diff file paths`],
+      language: best.language,
+      buildSystem: best.buildSystem,
+      mobilePath: best.mobilePath,
+    };
+  }
+
   private collectDirs(rootDir: string, maxDepth: number): string[] {
     const skipDirs = new Set(['.', 'node_modules', 'build', 'dist', 'Pods', '.git']);
     const dirs = [rootDir];

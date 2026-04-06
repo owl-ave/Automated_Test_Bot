@@ -12,9 +12,23 @@ export class RepoScanner {
     this.rootPath = rootPath;
   }
 
-  scan(): CodeAnalysis & { mobilePath: string } {
+  scan(diffFilePaths?: string[]): CodeAnalysis & { mobilePath: string } {
     const detector = new FrameworkDetector();
-    const detection = detector.detect(this.rootPath);
+    let detection = detector.detect(this.rootPath);
+
+    // Fallback: if filesystem scan found nothing, detect from PR diff file paths.
+    // This handles repos being bootstrapped from scratch (all files are "added").
+    if (detection.framework === 'native' && diffFilePaths && diffFilePaths.length > 0) {
+      const fallback = detector.detectFromFilePaths(diffFilePaths, this.rootPath);
+      if (fallback) {
+        this.logger.log('Filesystem scan returned native/unknown — using diff-path detection', {
+          framework: fallback.framework,
+          mobilePath: fallback.mobilePath,
+        });
+        detection = fallback;
+      }
+    }
+
     const framework = detection.framework;
     const mobilePath = detection.mobilePath;
     const screens = this.scanScreens(framework, mobilePath);
