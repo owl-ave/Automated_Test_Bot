@@ -376,8 +376,10 @@ export class FrameworkDetector {
       }
     }
 
-    // G4: mobilePath = dir where Xcode project lives, not necessarily rootPath
-    const xcodeFile = xcworkspaceFiles[0] || xcodeprojFiles[0];
+    // G4: mobilePath = dir where Xcode project lives, not necessarily rootPath.
+    // Exclude project.xcworkspace — it lives *inside* the .xcodeproj bundle and is not a standalone workspace.
+    const standaloneWorkspaces = xcworkspaceFiles.filter((f) => !f.includes('.xcodeproj/'));
+    const xcodeFile = standaloneWorkspaces[0] || xcodeprojFiles[0];
     const swiftMobilePath = xcodeFile ? path.dirname(xcodeFile) : rootPath;
 
     return {
