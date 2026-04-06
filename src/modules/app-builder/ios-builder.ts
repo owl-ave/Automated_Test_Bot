@@ -198,11 +198,13 @@ export class IosBuilder {
 
       const derivedDataPath = path.join(projectDir, 'build', 'DerivedData');
       this.logger.log('Starting xcodebuild', { scheme: resolvedScheme, derivedDataPath });
+      // Build for real device (not simulator) — BrowserStack App Automate needs device builds.
+      // Code signing disabled: BrowserStack re-signs the app with their own certificate.
       this.exec(
         `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" ` +
         `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
-        `-destination "generic/platform=iOS Simulator" ` +
-        `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
+        `-destination "generic/platform=iOS" ` +
+        `CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
         `ONLY_ACTIVE_ARCH=NO build`,
         projectDir,
         600000,

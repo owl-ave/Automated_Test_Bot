@@ -62,8 +62,8 @@ export class AndroidBuilder {
         execSync('chmod +x gradlew', { cwd: androidDir });
       }
 
-      // D11: Don't force New Architecture — let the project decide
-      execSync(`${gradlew} assembleRelease`, {
+      // Use assembleDebug — no keystore needed, works on any app out of the box
+      execSync(`${gradlew} assembleDebug`, {
         cwd: androidDir,
         stdio: 'inherit',
         env: { ...process.env },
@@ -84,16 +84,17 @@ export class AndroidBuilder {
   private buildFlutter(): string {
     try {
       this.logger.log('Building Flutter APK');
-      execSync('flutter build apk --release', {
+      // Use debug — no signing config needed, works on any app out of the box
+      execSync('flutter build apk --debug', {
         cwd: this.rootPath,
         stdio: 'inherit',
-        timeout: 600000, // D7: was missing timeout
+        timeout: 600000,
       });
 
       // E3: check both standard and alternative Flutter output paths
       const apkCandidates = [
-        path.join(this.rootPath, 'build', 'app', 'outputs', 'flutter-apk', 'app-release.apk'),
-        path.join(this.rootPath, 'build', 'app', 'outputs', 'apk', 'release', 'app-release.apk'),
+        path.join(this.rootPath, 'build', 'app', 'outputs', 'flutter-apk', 'app-debug.apk'),
+        path.join(this.rootPath, 'build', 'app', 'outputs', 'apk', 'debug', 'app-debug.apk'),
       ];
       const apkPath = apkCandidates.find((p) => fs.existsSync(p)) || this.findApk();
       if (!apkPath) throw new Error('Flutter APK not found after build');
@@ -118,7 +119,8 @@ export class AndroidBuilder {
         execSync('chmod +x gradlew', { cwd: androidDir });
       }
 
-      execSync(`${gradlew} assembleRelease`, {
+      // Use assembleDebug — no keystore needed, works on any app out of the box
+      execSync(`${gradlew} assembleDebug`, {
         cwd: androidDir,
         stdio: 'inherit',
         timeout: 600000,
@@ -183,7 +185,7 @@ export class AndroidBuilder {
           if (stat.isDirectory()) {
             const found = this.walkForApk(full, depth + 1, maxDepth);
             if (found) return found;
-          } else if (entry.endsWith('-release.apk') || (entry.endsWith('.apk') && dir.includes('release'))) {
+          } else if (entry.endsWith('.apk') && (dir.includes('release') || dir.includes('debug'))) {
             return full;
           }
         } catch { /* ignore */ }
