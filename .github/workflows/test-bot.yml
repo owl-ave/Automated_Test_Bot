@@ -50,7 +50,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.inputs.repo }}
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.pr_number != '0' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.event.inputs.branch }}
           token: ${{ steps.generate-token.outputs.token }}
           fetch-depth: 1
           path: target
@@ -126,7 +126,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.inputs.repo }}
-          ref: ${{ github.event.inputs.branch }}
+          ref: ${{ github.event.inputs.pr_number != '0' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.event.inputs.branch }}
           token: ${{ steps.generate-token.outputs.token }}
           fetch-depth: 0
           path: target
