@@ -203,7 +203,7 @@ export class PrCommenter {
         `- **Duration**: ${(t.duration / 1000).toFixed(1)}s`,
         `- **Error**: \`${t.error || 'Unknown error'}\``,
       ];
-      if (t.screenshot) {
+      if (t.screenshot && t.screenshot.startsWith('http')) {
         lines.push(`- **Screenshot**: [View Screenshot](${t.screenshot})`);
       }
       if (t.videoUrl) {

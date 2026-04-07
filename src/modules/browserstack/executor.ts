@@ -141,7 +141,6 @@ export class TestExecutor {
 
   private async executeScenario(session: SessionInfo, scenario: BddScenario): Promise<TestResult> {
     const startTime = Date.now();
-    let screenshot: string | undefined;
 
     try {
       logger.log('Executing scenario', { scenario: scenario.scenario, device: session.device.name });
@@ -150,23 +149,15 @@ export class TestExecutor {
         await this.executeStep(session, step);
       }
 
-      screenshot = await session.driver.takeScreenshot();
-
       return {
         scenario: scenario.scenario,
         status: 'pass',
         device: session.device.name,
         sessionId: session.sessionId,
         duration: Date.now() - startTime,
-        screenshot,
+        // Screenshots are accessible via BrowserStack session URL — no need to embed base64 here
       };
     } catch (error) {
-      try {
-        screenshot = await session.driver.takeScreenshot();
-      } catch {
-        // screenshot capture failed, continue
-      }
-
       return {
         scenario: scenario.scenario,
         status: 'fail',
@@ -174,7 +165,7 @@ export class TestExecutor {
         sessionId: session.sessionId,
         duration: Date.now() - startTime,
         error: String(error),
-        screenshot,
+        // Screenshots are accessible via BrowserStack session URL — no need to embed base64 here
       };
     }
   }
