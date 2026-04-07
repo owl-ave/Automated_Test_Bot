@@ -203,7 +203,9 @@ export class PrCommenter {
         `- **Duration**: ${(t.duration / 1000).toFixed(1)}s`,
         `- **Error**: \`${t.error || 'Unknown error'}\``,
       ];
-      // Never embed base64 screenshots — they bloat comments and GitHub won't render them
+      if (t.screenshot) {
+        lines.push(`- **Screenshot**: [View Screenshot](${t.screenshot})`);
+      }
       if (t.videoUrl) {
         lines.push(`- **Video**: [Watch Test Recording](${t.videoUrl})`);
       }
