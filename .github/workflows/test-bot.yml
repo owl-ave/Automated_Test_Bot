@@ -1,4 +1,5 @@
 name: Automated Mobile Testing Bot
+run-name: "test ${{ inputs.repo }} @ ${{ inputs.branch }}${{ inputs.pr_number != '0' && format(' PR#{0}', inputs.pr_number) || '' }}"
 
 on:
   workflow_dispatch:
@@ -125,7 +126,7 @@ jobs:
           repository: ${{ github.event.inputs.repo }}
           ref: ${{ github.event.inputs.pr_number != '0' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.event.inputs.branch }}
           token: ${{ steps.generate-token.outputs.token }}
-          fetch-depth: 0
+          fetch-depth: 1
           path: target
 
       # ── 4. Setup environment ──
@@ -150,6 +151,16 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
 
+      - name: Cache CocoaPods
+        if: needs.detect.outputs.needs_ios == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/Pods
+            target/ios/Pods
+          key: pods-${{ hashFiles('target/Podfile.lock', 'target/ios/Podfile.lock') }}
+          restore-keys: pods-
+
       - name: Install CocoaPods
         if: needs.detect.outputs.needs_ios == 'true'
         run: |
@@ -161,12 +172,11 @@ jobs:
           fi
 
       - name: Setup Flutter (if needed)
+        if: hashFiles('target/pubspec.yaml') != ''
         run: |
-          if [ -f "target/pubspec.yaml" ]; then
-            git clone --depth 1 --branch 3.24.0 https://github.com/flutter/flutter.git $HOME/flutter
-            export PATH="$HOME/flutter/bin:$PATH"
-            cd target && flutter pub get
-          fi
+          git clone --depth 1 --branch 3.24.0 https://github.com/flutter/flutter.git $HOME/flutter
+          export PATH="$HOME/flutter/bin:$PATH"
+          cd target && flutter pub get
 
       # ── 5. Install & build bot ──
       - name: Install bot dependencies

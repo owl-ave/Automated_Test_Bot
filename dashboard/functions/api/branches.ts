@@ -5,6 +5,7 @@ interface WorkflowRun {
   status: string;
   conclusion: string | null;
   head_branch: string;
+  display_title: string;
   event: string;
   created_at: string;
   updated_at: string;
@@ -12,23 +13,77 @@ interface WorkflowRun {
   triggering_actor?: { login: string };
   pull_requests?: Array<{ number: number }>;
   repository?: { full_name: string };
-  run_started_at?: string;
+  inputs?: { repo?: string; branch?: string; pr_number?: string } | null;
 }
 
-interface BranchSummary {
-  name: string;
+interface ResolvedRun {
+  id: number;
   repo: string;
-  totalRuns: number;
-  passed: number;
-  failed: number;
-  inProgress: number;
-  passRate: number;
-  lastRun: string | null;
-  lastStatus: string;
-  healthScore: number;
+  branch: string;
+  prNumber: number | null;
+  status: string;
+  conclusion: string | null;
+  created_at: string;
+  updated_at: string;
+  html_url: string;
+  triggeredBy: string;
 }
 
-function computeHealthScore(runs: WorkflowRun[]): number {
+// Parse run-name format: "test owner/repo @ branch PR#123"
+function parseDisplayTitle(title: string): { repo: string; branch: string; prNumber: number | null } {
+  const match = title.match(/^test\s+(\S+)\s+@\s+(\S+)(?:\s+PR#(\d+))?$/);
+  if (match) {
+    return { repo: match[1], branch: match[2], prNumber: match[3] ? parseInt(match[3]) : null };
+  }
+  return { repo: '', branch: '', prNumber: null };
+}
+
+// Resolve repo/branch from detect job logs
+async function resolveRunMeta(
+  runId: number, token: string, botRepo: string
+): Promise<{ repo: string; branch: string; prNumber: number | null }> {
+  try {
+    const jobsRes = await fetch(
+      `https://api.github.com/repos/${botRepo}/actions/runs/${runId}/jobs`,
+      { headers: ghHeaders(token) }
+    );
+    const jobsData = (await jobsRes.json()) as any;
+    const detectJob = (jobsData.jobs || []).find((j: any) => j.name === 'detect');
+    if (!detectJob) return { repo: '', branch: 'main', prNumber: null };
+
+    // GitHub returns 302 redirect to S3 for logs — must follow manually
+    const logRedirect = await fetch(
+      `https://api.github.com/repos/${botRepo}/actions/jobs/${detectJob.id}/logs`,
+      { headers: ghHeaders(token), redirect: 'manual' }
+    );
+    const logUrl = logRedirect.headers.get('location');
+    if (!logUrl) return { repo: '', branch: 'main', prNumber: null };
+    const logRes = await fetch(logUrl);
+    const logText = await logRes.text();
+
+    const repoMatch = logText.match(/read -r owner repo <<< "([^"]+)"/);
+    const refMatch = logText.match(/\s+ref:\s+(\S+)/);
+
+    let branch = 'main';
+    let prNumber: number | null = null;
+    if (refMatch) {
+      const ref = refMatch[1];
+      const prRefMatch = ref.match(/^refs\/pull\/(\d+)\/head$/);
+      if (prRefMatch) {
+        prNumber = parseInt(prRefMatch[1]);
+        branch = `PR-${prRefMatch[1]}`;
+      } else {
+        branch = ref.replace(/^refs\/heads\//, '');
+      }
+    }
+
+    return { repo: repoMatch ? repoMatch[1] : '', branch, prNumber };
+  } catch {
+    return { repo: '', branch: 'main', prNumber: null };
+  }
+}
+
+function computeHealthScore(runs: ResolvedRun[]): number {
   if (runs.length === 0) return 0;
 
   const completed = runs.filter(r => r.status === 'completed');
@@ -36,15 +91,12 @@ function computeHealthScore(runs: WorkflowRun[]): number {
   const total = completed.length || 1;
   const passRate = (passed / total) * 100;
 
-  // Recency bonus
-  const lastRun = runs[0];
-  const hoursSinceLast = (Date.now() - new Date(lastRun.created_at).getTime()) / 3600000;
+  const hoursSinceLast = (Date.now() - new Date(runs[0].created_at).getTime()) / 3600000;
   let recencyBonus = 25;
   if (hoursSinceLast < 24) recencyBonus = 100;
   else if (hoursSinceLast < 168) recencyBonus = 75;
   else if (hoursSinceLast < 720) recencyBonus = 50;
 
-  // Stability bonus — standard deviation of daily pass rates
   const dailyMap: Record<string, { passed: number; total: number }> = {};
   completed.forEach(r => {
     const day = r.created_at.slice(0, 10);
@@ -79,45 +131,74 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
   try {
     const token = await getTokenForRepo(context.env, botOwner, botRepoName);
 
-    // Fetch workflow runs (up to 100 for branch analysis)
     const res = await fetch(
-      `https://api.github.com/repos/${botRepo}/actions/workflows/test-bot.yml/runs?per_page=100`,
+      `https://api.github.com/repos/${botRepo}/actions/workflows/test-bot.yml/runs?per_page=50`,
       { headers: ghHeaders(token) }
     );
     const data = (await res.json()) as { workflow_runs?: WorkflowRun[] };
-    const allRuns = data.workflow_runs || [];
+    const allWorkflowRuns = data.workflow_runs || [];
 
-    // Filter by target repo if specified
-    const filteredRuns = repoParam
-      ? allRuns.filter(r => {
-          // Check if the workflow was triggered for this repo (via inputs or repository)
-          const runRepo = r.repository?.full_name || botRepo;
-          return runRepo === repoParam || runRepo === botRepo;
-        })
-      : allRuns;
+    // Resolve repo/branch — parse display_title first, fall back to job logs (batched, max 10 concurrent)
+    const needsResolve: { index: number; run: WorkflowRun }[] = [];
+    const resolvedRuns: ResolvedRun[] = allWorkflowRuns.map((r, i) => {
+      const parsed = parseDisplayTitle(r.display_title || '');
+      const repo = r.inputs?.repo || parsed.repo;
+      const branch = r.inputs?.branch || parsed.branch;
+      const prNumber = r.inputs?.pr_number ? parseInt(r.inputs.pr_number) || null : parsed.prNumber;
 
-    // Group runs by branch
-    const branchMap: Record<string, WorkflowRun[]> = {};
-    filteredRuns.forEach(r => {
-      const b = r.head_branch || 'unknown';
-      if (!branchMap[b]) branchMap[b] = [];
-      branchMap[b].push(r);
+      if (!repo) needsResolve.push({ index: i, run: r });
+
+      return {
+        id: r.id,
+        repo: repo || '',
+        branch: branch || r.head_branch || 'main',
+        prNumber,
+        status: r.status,
+        conclusion: r.conclusion,
+        created_at: r.created_at,
+        updated_at: r.updated_at,
+        html_url: r.html_url,
+        triggeredBy: r.triggering_actor?.login || 'unknown',
+      };
     });
 
-    // If specific branch requested — return detail
+    // Resolve unresolved runs in batches of 10 to avoid timeout
+    for (let i = 0; i < needsResolve.length; i += 10) {
+      const batch = needsResolve.slice(i, i + 10);
+      const results = await Promise.all(
+        batch.map(({ run }) => resolveRunMeta(run.id, token, botRepo))
+      );
+      batch.forEach(({ index }, j) => {
+        const meta = results[j];
+        resolvedRuns[index].repo = meta.repo || resolvedRuns[index].repo;
+        resolvedRuns[index].branch = meta.branch || resolvedRuns[index].branch;
+        resolvedRuns[index].prNumber = meta.prNumber || resolvedRuns[index].prNumber;
+      });
+    }
+
+    // Filter by target repo
+    const filteredRuns = repoParam
+      ? resolvedRuns.filter(r => r.repo === repoParam)
+      : resolvedRuns;
+
+    // Group by branch
+    const branchMap: Record<string, ResolvedRun[]> = {};
+    filteredRuns.forEach(r => {
+      if (!branchMap[r.branch]) branchMap[r.branch] = [];
+      branchMap[r.branch].push(r);
+    });
+
+    // Specific branch detail
     if (branchParam) {
       const branchRuns = branchMap[branchParam] || [];
 
       if (branchRuns.length === 0) {
         return Response.json({
           branch: branchParam,
-          repo: repoParam || botRepo,
+          repo: repoParam || '',
           summary: { totalRuns: 0, passed: 0, failed: 0, inProgress: 0, passRate: 0, avgDuration: 0, healthScore: 0 },
           trends: [],
           recentRuns: [],
-          scenarioCoverage: {},
-          failureReasons: [],
-          platforms: {},
         });
       }
 
@@ -126,13 +207,11 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
       const failed = completed.filter(r => r.conclusion === 'failure').length;
       const inProgress = branchRuns.filter(r => r.status === 'in_progress').length;
 
-      // Compute average duration (ms)
       const durations = completed
         .map(r => new Date(r.updated_at).getTime() - new Date(r.created_at).getTime())
         .filter(d => d > 0);
       const avgDuration = durations.length > 0 ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length) : 0;
 
-      // Daily trends (last 30 days)
       const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
       const trendMap: Record<string, { passed: number; failed: number; total: number }> = {};
       completed.forEach(r => {
@@ -144,28 +223,10 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
           else trendMap[day].failed++;
         }
       });
-      const trends = Object.entries(trendMap)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, d]) => ({ date, ...d }));
-
-      // Recent runs
-      const recentRuns = branchRuns.slice(0, 20).map(r => ({
-        id: r.id,
-        status: r.status,
-        conclusion: r.conclusion,
-        branch: r.head_branch,
-        event: r.event,
-        prNumber: r.pull_requests?.[0]?.number || null,
-        triggeredBy: r.triggering_actor?.login || 'unknown',
-        startedAt: r.created_at,
-        completedAt: r.updated_at,
-        url: r.html_url,
-        repo: r.repository?.full_name || botRepo,
-      }));
 
       const detail: any = {
         branch: branchParam,
-        repo: repoParam || botRepo,
+        repo: repoParam || '',
         summary: {
           totalRuns: branchRuns.length,
           passed,
@@ -175,32 +236,19 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
           avgDuration,
           healthScore: computeHealthScore(branchRuns),
         },
-        trends,
-        recentRuns,
+        trends: Object.entries(trendMap).sort(([a], [b]) => a.localeCompare(b)).map(([date, d]) => ({ date, ...d })),
+        recentRuns: branchRuns.slice(0, 20),
       };
 
-      // If comparison requested
       if (compareParam && branchMap[compareParam]) {
         const baseRuns = branchMap[compareParam];
         const baseCompleted = baseRuns.filter(r => r.status === 'completed');
         const basePassed = baseCompleted.filter(r => r.conclusion === 'success').length;
         const basePassRate = baseCompleted.length > 0 ? Math.round((basePassed / baseCompleted.length) * 1000) / 10 : 0;
-        const baseDurations = baseCompleted
-          .map(r => new Date(r.updated_at).getTime() - new Date(r.created_at).getTime())
-          .filter(d => d > 0);
-        const baseAvgDuration = baseDurations.length > 0 ? Math.round(baseDurations.reduce((a, b) => a + b, 0) / baseDurations.length) : 0;
-
         detail.comparison = {
-          base: {
-            name: compareParam,
-            totalRuns: baseRuns.length,
-            passRate: basePassRate,
-            avgDuration: baseAvgDuration,
-            healthScore: computeHealthScore(baseRuns),
-          },
+          base: { name: compareParam, passRate: basePassRate, healthScore: computeHealthScore(baseRuns) },
           delta: {
             passRate: Math.round((detail.summary.passRate - basePassRate) * 10) / 10,
-            avgDuration: avgDuration - baseAvgDuration,
             healthScore: detail.summary.healthScore - computeHealthScore(baseRuns),
           },
         };
@@ -209,21 +257,18 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
       return Response.json(detail);
     }
 
-    // Return branch list with summaries
-    const branches: BranchSummary[] = Object.entries(branchMap)
+    // Branch list
+    const branches = Object.entries(branchMap)
       .map(([name, runs]) => {
         const completed = runs.filter(r => r.status === 'completed');
         const passed = completed.filter(r => r.conclusion === 'success').length;
-        const failed = completed.filter(r => r.conclusion === 'failure').length;
-        const inProgress = runs.filter(r => r.status === 'in_progress').length;
-
         return {
           name,
-          repo: repoParam || botRepo,
+          repo: repoParam || runs[0]?.repo || '',
           totalRuns: runs.length,
           passed,
-          failed,
-          inProgress,
+          failed: completed.filter(r => r.conclusion === 'failure').length,
+          inProgress: runs.filter(r => r.status === 'in_progress').length,
           passRate: completed.length > 0 ? Math.round((passed / completed.length) * 1000) / 10 : 0,
           lastRun: runs[0]?.created_at || null,
           lastStatus: runs[0]?.conclusion || runs[0]?.status || 'unknown',
@@ -234,6 +279,6 @@ export const onRequestGet: PagesFunction<GitHubAppEnv> = async (context) => {
 
     return Response.json({ branches });
   } catch (err: any) {
-    return Response.json({ error: err.message || 'Failed to fetch branch data' }, { status: 500 });
+    return Response.json({ error: err.message || 'Failed to fetch branch data', stack: err.stack }, { status: 500 });
   }
 };

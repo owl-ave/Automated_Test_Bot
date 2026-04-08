@@ -114,17 +114,33 @@ app.get('/api/runs', async (_req, res) => {
       { headers: gh(getToken()) }
     );
 
-    const runs = (data.workflow_runs || []).map((r: any) => ({
-      id: String(r.id),
-      repo: r.inputs?.repo || r.display_title || '',
-      prNumber: r.inputs?.pr_number ? parseInt(r.inputs.pr_number) || null : null,
-      branch: r.inputs?.branch || r.head_branch || 'main',
-      status: mapStatus(r.status),
-      conclusion: r.conclusion === 'success' ? 'success' : r.conclusion === 'failure' ? 'failure' : r.conclusion === 'cancelled' ? 'cancelled' : undefined,
-      startedAt: r.created_at,
-      completedAt: r.updated_at || null,
-      triggeredBy: r.triggering_actor?.login || 'dashboard',
-      url: r.html_url,
+    const token = getToken();
+    const runs = await Promise.all((data.workflow_runs || []).map(async (r: any) => {
+      const parsed = parseDisplayTitle(r.display_title || '');
+      let repo = r.inputs?.repo || parsed.repo;
+      let branch = r.inputs?.branch || parsed.branch;
+      let prNumber = r.inputs?.pr_number ? parseInt(r.inputs.pr_number) || null : parsed.prNumber;
+
+      // If still unresolved, fetch from job logs (cached)
+      if (!repo) {
+        const meta = await resolveRunMeta(String(r.id), token, botOwner, botRepo);
+        repo = meta.repo;
+        branch = branch || meta.branch;
+        prNumber = prNumber || meta.prNumber;
+      }
+
+      return {
+        id: String(r.id),
+        repo: repo || r.display_title || '',
+        prNumber,
+        branch: branch || r.head_branch || 'main',
+        status: mapStatus(r.status),
+        conclusion: r.conclusion === 'success' ? 'success' : r.conclusion === 'failure' ? 'failure' : r.conclusion === 'cancelled' ? 'cancelled' : undefined,
+        startedAt: r.created_at,
+        completedAt: r.updated_at || null,
+        triggeredBy: r.triggering_actor?.login || 'dashboard',
+        url: r.html_url,
+      };
     }));
 
     res.json(runs);
@@ -137,6 +153,69 @@ function mapStatus(ghStatus: string): 'queued' | 'in_progress' | 'completed' {
   if (ghStatus === 'completed') return 'completed';
   if (ghStatus === 'in_progress') return 'in_progress';
   return 'queued';
+}
+
+// Parse run-name format: "test owner/repo @ branch PR#123"
+function parseDisplayTitle(title: string): { repo: string; branch: string; prNumber: number | null } {
+  const match = title.match(/^test\s+(\S+)\s+@\s+(\S+)(?:\s+PR#(\d+))?$/);
+  if (match) {
+    return { repo: match[1], branch: match[2], prNumber: match[3] ? parseInt(match[3]) : null };
+  }
+  return { repo: '', branch: '', prNumber: null };
+}
+
+// Cache for run metadata parsed from job logs
+const runMetaCache = new Map<string, { repo: string; branch: string; prNumber: number | null }>();
+
+async function resolveRunMeta(
+  runId: string, token: string, botOwner: string, botRepo: string
+): Promise<{ repo: string; branch: string; prNumber: number | null }> {
+  if (runMetaCache.has(runId)) return runMetaCache.get(runId)!;
+
+  try {
+    // Fetch jobs for this run, find the "detect" job
+    const { data: jobsData } = await axios.get(
+      `https://api.github.com/repos/${botOwner}/${botRepo}/actions/runs/${runId}/jobs`,
+      { headers: gh(token) }
+    );
+    const detectJob = (jobsData.jobs || []).find((j: any) => j.name === 'detect');
+    if (!detectJob) return { repo: '', branch: 'main', prNumber: null };
+
+    // Fetch logs for the detect job — contains "IFS='/' read -r owner repo <<< "owner/repo""
+    const logRes = await axios.get(
+      `https://api.github.com/repos/${botOwner}/${botRepo}/actions/jobs/${detectJob.id}/logs`,
+      { headers: gh(token), maxRedirects: 5, responseType: 'text' }
+    );
+    const logText = String(logRes.data);
+
+    // Parse repo from: IFS='/' read -r owner repo <<< "owner/repo"
+    const repoMatch = logText.match(/read -r owner repo <<< "([^"]+)"/);
+    // Parse ref from checkout step: "ref: refs/pull/8/head" or "ref: main"
+    const refMatch = logText.match(/\s+ref:\s+(\S+)/);
+
+    let branch = 'main';
+    let prNumber: number | null = null;
+    if (refMatch) {
+      const ref = refMatch[1];
+      const prRefMatch = ref.match(/^refs\/pull\/(\d+)\/head$/);
+      if (prRefMatch) {
+        prNumber = parseInt(prRefMatch[1]);
+        branch = `PR-${prRefMatch[1]}`;
+      } else {
+        branch = ref.replace(/^refs\/heads\//, '');
+      }
+    }
+
+    const meta = {
+      repo: repoMatch ? repoMatch[1] : '',
+      branch,
+      prNumber,
+    };
+    runMetaCache.set(runId, meta);
+    return meta;
+  } catch {
+    return { repo: '', branch: 'main', prNumber: null };
+  }
 }
 
 // GET /api/runs/:id — single run details
@@ -230,17 +309,31 @@ app.get('/api/branches', async (req, res) => {
       { headers: gh(getToken()) }
     );
 
-    const allRuns = (data.workflow_runs || [])
-      .filter((r: any) => !filterRepo || r.inputs?.repo === filterRepo)
-      .map((r: any) => ({
+    const token = getToken();
+    const allRuns = (await Promise.all((data.workflow_runs || []).map(async (r: any) => {
+      const parsed = parseDisplayTitle(r.display_title || '');
+      let repo = r.inputs?.repo || parsed.repo;
+      let branch = r.inputs?.branch || parsed.branch;
+      let prNumber = r.inputs?.pr_number ? parseInt(r.inputs.pr_number) || null : parsed.prNumber;
+
+      if (!repo) {
+        const meta = await resolveRunMeta(String(r.id), token, botOwner, botRepo);
+        repo = meta.repo;
+        branch = branch || meta.branch;
+        prNumber = prNumber || meta.prNumber;
+      }
+
+      return {
         id: String(r.id),
-        repo: r.inputs?.repo || '',
-        branch: r.inputs?.branch || 'main',
+        repo: repo || '',
+        branch: branch || 'main',
         status: mapStatus(r.status),
         conclusion: r.conclusion,
         startedAt: r.created_at,
-        prNumber: r.inputs?.pr_number ? parseInt(r.inputs.pr_number) || null : null,
-      }));
+        prNumber,
+        triggeredBy: r.triggering_actor?.login || 'dashboard',
+      };
+    }))).filter((r: any) => !filterRepo || r.repo === filterRepo);
 
     // Group by branch
     const branchMap: Record<string, any[]> = {};
