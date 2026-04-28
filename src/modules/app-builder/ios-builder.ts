@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import { Logger } from '../../utils/logger';
 
 export class IosBuilder {
@@ -167,12 +167,25 @@ export class IosBuilder {
         this.exec('pod install --repo-update', podfilePath, 300000);
       }
 
-      // List available schemes — D9: resolve actual scheme name
+      // Resolve Swift Package Manager dependencies FIRST — Firebase/Sentry/Privy are heavy
+      // and a cold fetch can exceed 30s. Doing this before -list keeps the list call fast.
+      const spmCacheDir = path.join(projectDir, 'build', 'SourcePackages');
+      try {
+        this.exec(
+          `xcodebuild ${workspaceArg} -resolvePackageDependencies -clonedSourcePackagesDirPath "${spmCacheDir}"`,
+          projectDir,
+          300000,
+        );
+      } catch (e: any) {
+        this.logger.warn('SPM resolve failed — continuing (may not use SPM)', { message: e?.message });
+      }
+
+      // List available schemes (now fast — packages already resolved)
       let resolvedScheme = schemeName;
       try {
         const schemesOutput = execSync(
           `xcodebuild ${workspaceArg} -list -json`,
-          { cwd: projectDir, encoding: 'utf-8', timeout: 30000 },
+          { cwd: projectDir, encoding: 'utf-8', timeout: 60000 },
         );
         const info = JSON.parse(schemesOutput);
         const schemes: string[] = info.workspace?.schemes ?? info.project?.schemes ?? [];
@@ -181,19 +194,11 @@ export class IosBuilder {
           resolvedScheme = schemes[0];
           this.logger.log(`Scheme "${schemeName}" not found, using "${resolvedScheme}"`);
         }
-      } catch (e) {
-        this.logger.warn('Could not list schemes, using guessed name', e);
-      }
-
-      // Resolve Swift Package Manager dependencies
-      try {
-        this.exec(
-          `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" -resolvePackageDependencies`,
-          projectDir,
-          120000,
-        );
-      } catch {
-        this.logger.warn('SPM resolve failed — continuing (may not use SPM)');
+      } catch (e: any) {
+        this.logger.error('Could not list schemes, falling back to guessed name', {
+          guessed: schemeName,
+          message: e?.message || String(e),
+        });
       }
 
       const derivedDataPath = path.join(projectDir, 'build', 'DerivedData');
@@ -233,14 +238,36 @@ export class IosBuilder {
     return ipaPath;
   }
 
-  /** Run a command with output captured and logged on failure */
+  /** Run a command with output streamed AND captured, so failures surface in the bot's log */
   private exec(cmd: string, cwd: string, timeout = 120000): void {
-    try {
-      execSync(cmd, { cwd, stdio: 'inherit', timeout });
-    } catch (error: any) {
-      const msg = error?.stderr?.toString?.()?.slice(-2000) || error?.message || String(error);
-      this.logger.error('Command failed', { cmd: cmd.slice(0, 120), error: msg });
-      throw new Error(`Command failed: ${cmd.slice(0, 120)}\n${msg}`);
+    const result = spawnSync(cmd, {
+      cwd,
+      shell: true,
+      timeout,
+      encoding: 'utf-8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+
+    if (result.error || result.status !== 0) {
+      const tail = (s: string) => (s || '').slice(-4000);
+      const stderr = tail(result.stderr || '');
+      const stdout = tail(result.stdout || '');
+      const errMsg = result.error?.message || `exit ${result.status}`;
+      this.logger.error('Command failed', {
+        cmd: cmd.slice(0, 200),
+        exit: result.status,
+        signal: result.signal,
+        error: errMsg,
+        stderrTail: stderr,
+      });
+      throw new Error(
+        `Command failed (${errMsg}): ${cmd.slice(0, 200)}\n` +
+        `--- stderr (last 4KB) ---\n${stderr || '(empty)'}\n` +
+        `--- stdout (last 4KB) ---\n${stdout || '(empty)'}`,
+      );
     }
   }
 

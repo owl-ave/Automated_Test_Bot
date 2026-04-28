@@ -161,6 +161,17 @@ jobs:
           ruby-version: '3.2'
           bundler-cache: true
 
+      - name: Select Xcode 26.2
+        if: needs.detect.outputs.needs_ios == 'true'
+        run: |
+          if [ -d /Applications/Xcode_26.2.app ]; then
+            sudo xcode-select -s /Applications/Xcode_26.2.app
+          else
+            echo "::warning::Xcode 26.2 not found on runner; falling back to default"
+            ls /Applications | grep -i '^Xcode' || true
+          fi
+          xcodebuild -version
+
       - name: Cache CocoaPods
         if: needs.detect.outputs.needs_ios == 'true'
         uses: actions/cache@v4
@@ -170,6 +181,17 @@ jobs:
             target/ios/Pods
           key: pods-${{ hashFiles('target/Podfile.lock', 'target/ios/Podfile.lock') }}
           restore-keys: pods-
+
+      - name: Cache Swift Package Manager
+        if: needs.detect.outputs.needs_ios == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/org.swift.swiftpm
+            target/ios/build/SourcePackages
+            target/build/SourcePackages
+          key: spm-${{ hashFiles('target/**/Package.resolved') }}
+          restore-keys: spm-
 
       - name: Install CocoaPods
         if: needs.detect.outputs.needs_ios == 'true'

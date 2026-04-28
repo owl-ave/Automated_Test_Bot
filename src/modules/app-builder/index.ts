@@ -120,8 +120,18 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
       logger.log('Skipping iOS build — Kotlin/Android-only project detected');
     }
 
-    if (!buildResult.androidAppUrl && !buildResult.iosAppUrl) {
-      throw new Error('Both Android and iOS builds failed');
+    const attempted: string[] = [];
+    const succeeded: string[] = [];
+    if (shouldBuildAndroid) {
+      attempted.push('android');
+      if (buildResult.androidAppUrl) succeeded.push('android');
+    }
+    if (shouldBuildIos) {
+      attempted.push('ios');
+      if (buildResult.iosAppUrl) succeeded.push('ios');
+    }
+    if (attempted.length > 0 && succeeded.length === 0) {
+      throw new Error(`App build failed (attempted: ${attempted.join(', ')})`);
     }
 
     context.appBuild = buildResult;
