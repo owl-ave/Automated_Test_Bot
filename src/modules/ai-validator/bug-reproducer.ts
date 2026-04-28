@@ -101,10 +101,15 @@ Severity guide:
   }
 
   private errorSignature(error: string): string {
+    // Normalize volatile tokens without collapsing meaningful small integers.
+    // Keeps short numbers (e.g. HTTP status codes, line numbers ≤ 4 digits) so
+    // "timeout after 60000ms" and "timeout after 1000ms" don't collide.
     return error
-      .replace(/0x[0-9a-f]+/gi, 'ADDR')
-      .replace(/\d+/g, 'N')
-      .replace(/["'][^"']*["']/g, 'STR')
+      .replace(/0x[0-9a-f]+/gi, 'ADDR') // memory addresses
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, 'UUID')
+      .replace(/\b[0-9a-f]{16,}\b/gi, 'HEX') // long hex (hashes, tokens)
+      .replace(/\b\d{10,}\b/g, 'TIMESTAMP') // epoch millis / ns
+      .replace(/["'][^"']{20,}["']/g, 'STR') // only collapse long quoted strings
       .substring(0, 200)
       .trim();
   }
@@ -116,15 +121,21 @@ Severity guide:
     rootCause: string;
     suggestedFix: string;
   } {
-    try {
-      const cleaned = text
-        .replace(/```json?\n?/g, '')
-        .replace(/```/g, '')
-        .trim();
-      const parsed = JSON.parse(cleaned);
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { safeJsonParse } = require('../../ai/parse-json') as typeof import('../../ai/parse-json');
+    const parsed = safeJsonParse<{
+      title?: string;
+      severity?: string;
+      steps?: string[];
+      rootCause?: string;
+      suggestedFix?: string;
+    }>(text);
 
+    if (parsed) {
       const validSeverities = ['critical', 'high', 'medium', 'low'] as const;
-      const severity = validSeverities.includes(parsed.severity) ? parsed.severity : 'medium';
+      const severity = (validSeverities as readonly string[]).includes(parsed.severity || '')
+        ? (parsed.severity as BugReport['severity'])
+        : 'medium';
 
       return {
         title: parsed.title || 'Untitled Bug',
@@ -133,16 +144,16 @@ Severity guide:
         rootCause: parsed.rootCause || 'Unable to determine root cause',
         suggestedFix: parsed.suggestedFix || 'Manual investigation required',
       };
-    } catch {
-      logger.warn('Failed to parse bug report response');
-      return {
-        title: 'Test Failure',
-        severity: 'medium',
-        steps: ['Automated analysis could not parse response'],
-        rootCause: 'Unable to determine',
-        suggestedFix: 'Manual investigation required',
-      };
     }
+
+    logger.warn('Failed to parse bug report response (unparseable JSON from Claude)');
+    return {
+      title: 'Test Failure',
+      severity: 'medium',
+      steps: ['Automated analysis could not parse response'],
+      rootCause: 'Unable to determine',
+      suggestedFix: 'Manual investigation required',
+    };
   }
 
   private fallbackReport(failure: TestResult, logs: string): BugReport {

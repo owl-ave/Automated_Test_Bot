@@ -5,16 +5,19 @@ import { Logger } from '../../utils/logger';
 export class EdgeCaseEngine {
   private logger = new Logger('EdgeCaseEngine');
 
+  // Edge cases come from two independent sources:
+  //   1. generateAIEdgeCases  — Claude-generated scenarios for this specific app
+  //   2. generatePatternEdgeCases — deterministic templated scenarios (hardcoded
+  //      boundary/permission/offline checks). These ship even when Claude is
+  //      unavailable so every run has a baseline edge-case suite.
+  // Do not relabel pattern scenarios as "AI-generated" — they are explicitly not.
   async generateEdgeCases(codeAnalysis: CodeAnalysis, claudeClient: ClaudeClient): Promise<BddScenario[]> {
-    const scenarios: BddScenario[] = [];
+    const [aiScenarios, patternScenarios] = await Promise.all([
+      this.generateAIEdgeCases(codeAnalysis, claudeClient),
+      Promise.resolve(this.generatePatternEdgeCases(codeAnalysis)),
+    ]);
 
-    // Generate AI-powered edge cases for each screen
-    const aiScenarios = await this.generateAIEdgeCases(codeAnalysis, claudeClient);
-    scenarios.push(...aiScenarios);
-
-    // Generate pattern-based edge cases from screen elements
-    const patternScenarios = this.generatePatternEdgeCases(codeAnalysis);
-    scenarios.push(...patternScenarios);
+    const scenarios: BddScenario[] = [...aiScenarios, ...patternScenarios];
 
     this.logger.log('Edge cases generated', {
       aiGenerated: aiScenarios.length,

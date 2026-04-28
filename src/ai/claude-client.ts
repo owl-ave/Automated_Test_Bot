@@ -1,5 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../utils/logger';
+import { safeJsonParseWithDefault } from './parse-json';
 
 const logger = new Logger('ClaudeClient');
 
@@ -58,21 +59,15 @@ export class ClaudeClient {
     );
   }
 
-  async validateOutput(screenshot: string, expectedBehavior: string): Promise<{ status: string; confidence: number }> {
+  async validateOutput(_screenshot: string, expectedBehavior: string): Promise<{ status: string; confidence: number }> {
     logger.log('Validating output with Claude Agent SDK');
     const text = await runQuery(
       `Does this screen match the expected behavior? Expected: ${expectedBehavior}\n\nRespond with JSON: {"status": "pass|fail|warn", "confidence": 0-100}`,
     );
-    try {
-      return JSON.parse(
-        text
-          .replace(/```json?\n?/g, '')
-          .replace(/```/g, '')
-          .trim(),
-      );
-    } catch {
-      return { status: 'warn', confidence: 0 };
-    }
+    return safeJsonParseWithDefault<{ status: string; confidence: number }>(text, {
+      status: 'warn',
+      confidence: 0,
+    });
   }
 
   async prompt(text: string): Promise<string> {

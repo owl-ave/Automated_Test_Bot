@@ -1,4 +1,7 @@
+import axios from 'axios';
 import { Logger } from '../../utils/logger';
+import { getBrowserStackConfig } from '../../config/browserstack';
+import { swipeFromTo } from '../browserstack/w3c-actions';
 
 export interface NetworkChaosResult {
   test: string;
@@ -7,98 +10,101 @@ export interface NetworkChaosResult {
   errorScreenshot?: string;
 }
 
+// BrowserStack App Automate real network profile REST API.
+// https://www.browserstack.com/docs/app-automate/appium/features/simulate-network-conditions
+// PUT /app-automate/sessions/{sessionId}/update_network.json
+async function setBrowserStackNetworkProfile(sessionId: string, profile: string): Promise<void> {
+  const cfg = getBrowserStackConfig();
+  const url = `https://api-cloud.browserstack.com/app-automate/sessions/${sessionId}/update_network.json`;
+  await axios.put(
+    url,
+    { networkProfile: profile },
+    {
+      auth: { username: cfg.username, password: cfg.accessKey },
+      timeout: cfg.timeout,
+    },
+  );
+}
+
 export class NetworkChaos {
   private logger = new Logger('NetworkChaos');
 
   async toggleAirplaneMode(driver: any, platform: string, enable: boolean): Promise<void> {
-    try {
-      if (platform.toLowerCase() === 'android') {
+    if (platform.toLowerCase() === 'android') {
+      try {
         if (enable) {
-          await driver.execute('mobile: shell', {
-            command: 'cmd',
-            args: ['connectivity', 'airplane-mode', 'enable'],
-          });
-          await driver.execute('mobile: shell', {
-            command: 'svc',
-            args: ['wifi', 'disable'],
-          });
-          await driver.execute('mobile: shell', {
-            command: 'svc',
-            args: ['data', 'disable'],
-          });
+          await driver.execute('mobile: shell', { command: 'svc', args: ['wifi', 'disable'] });
+          await driver.execute('mobile: shell', { command: 'svc', args: ['data', 'disable'] });
         } else {
-          await driver.execute('mobile: shell', {
-            command: 'cmd',
-            args: ['connectivity', 'airplane-mode', 'disable'],
-          });
-          await driver.execute('mobile: shell', {
-            command: 'svc',
-            args: ['wifi', 'enable'],
-          });
-          await driver.execute('mobile: shell', {
-            command: 'svc',
-            args: ['data', 'enable'],
-          });
+          await driver.execute('mobile: shell', { command: 'svc', args: ['wifi', 'enable'] });
+          await driver.execute('mobile: shell', { command: 'svc', args: ['data', 'enable'] });
         }
-      } else {
-        // iOS: Use BrowserStack's network throttling API
-        const networkProfile = enable ? 'no-network' : 'reset';
-        await driver.execute('browserstack_executor: setNetworkProfile', {
-          profile: networkProfile,
-        });
+        await driver.pause(2000);
+        this.logger.log(`Network ${enable ? 'disabled' : 'enabled'} on Android via adb`);
+        return;
+      } catch (err) {
+        this.logger.warn('adb network toggle failed, falling back to BrowserStack profile', { error: String(err) });
       }
+    }
 
+    // iOS or Android-fallback: BrowserStack REST network profile.
+    const profile = enable ? 'no-network' : 'reset';
+    try {
+      await setBrowserStackNetworkProfile(driver.sessionId, profile);
       await driver.pause(2000);
-      this.logger.log(`Airplane mode ${enable ? 'enabled' : 'disabled'} on ${platform}`);
+      this.logger.log(`BrowserStack network profile set to ${profile}`);
     } catch (err) {
-      this.logger.error(`Failed to toggle airplane mode on ${platform}`, err);
+      this.logger.error('Failed to set BrowserStack network profile', err);
       throw err;
     }
   }
 
   async simulateSlowNetwork(driver: any): Promise<void> {
     try {
-      // BrowserStack network throttling — 2G profile
-      await driver.execute('browserstack_executor: setNetworkProfile', {
-        profile: '2g-gprs-good',
-      });
-
-      this.logger.log('Slow network (2G) simulation enabled');
+      await setBrowserStackNetworkProfile(driver.sessionId, '2g-gprs-good');
+      this.logger.log('Slow network (2G) simulation enabled via BrowserStack');
+      return;
     } catch (err) {
-      // Fallback: Appium network conditions
-      try {
-        await driver.setNetworkConditions({
-          offline: false,
-          latency: 500, // 500ms latency
-          download_speed: 50 * 1024, // 50 KB/s
-          upload_speed: 20 * 1024, // 20 KB/s
-        });
-        this.logger.log('Slow network simulation enabled via Appium');
-      } catch (fallbackErr) {
-        this.logger.error('Failed to simulate slow network', fallbackErr);
-        throw fallbackErr;
-      }
+      this.logger.warn('BrowserStack slow-network failed, trying Appium setNetworkConditions', {
+        error: String(err),
+      });
+    }
+
+    // Appium fallback (Android-only). Requires chromedriver-style network-conditions support; many
+    // Appium versions expose this on Android emulators but not on real iOS devices.
+    try {
+      await driver.setNetworkConditions({
+        offline: false,
+        latency: 500,
+        download_speed: 50 * 1024,
+        upload_speed: 20 * 1024,
+      });
+      this.logger.log('Slow network simulation enabled via Appium setNetworkConditions');
+    } catch (fallbackErr) {
+      this.logger.error('Failed to simulate slow network', fallbackErr);
+      throw fallbackErr;
     }
   }
 
   async resetNetwork(driver: any): Promise<void> {
     try {
-      await driver.execute('browserstack_executor: setNetworkProfile', {
-        profile: 'reset',
-      });
-    } catch {
-      try {
-        await driver.setNetworkConditions({
-          offline: false,
-          latency: 0,
-          download_speed: -1,
-          upload_speed: -1,
-        });
-      } catch {
-        /* best effort */
-      }
+      await setBrowserStackNetworkProfile(driver.sessionId, 'reset');
+      this.logger.log('Network conditions reset via BrowserStack');
+      return;
+    } catch (err) {
+      this.logger.warn('BrowserStack network reset failed, trying Appium', { error: String(err) });
     }
-    this.logger.log('Network conditions reset');
+    try {
+      await driver.setNetworkConditions({
+        offline: false,
+        latency: 0,
+        download_speed: -1,
+        upload_speed: -1,
+      });
+      this.logger.log('Network conditions reset via Appium');
+    } catch (err) {
+      this.logger.warn('Appium network reset also failed; leaving session as-is', { error: String(err) });
+    }
   }
 
   async verifyOfflineBehavior(driver: any): Promise<NetworkChaosResult> {
@@ -109,20 +115,15 @@ export class NetworkChaos {
     };
 
     try {
-      // Get current screen state before going offline
-      const beforeSource = await driver.getPageSource();
-
-      // Enable airplane mode
+      await driver.getPageSource();
       const platform = await this.detectPlatform(driver);
       await this.toggleAirplaneMode(driver, platform, true);
       await driver.pause(3000);
 
-      // Check for proper error handling
       const afterSource = await driver.getPageSource();
-      const screenshot = await driver.takeScreenshot().catch(() => null);
+      const screenshot = await driver.takeScreenshot().catch(() => undefined);
       result.errorScreenshot = screenshot;
 
-      // Look for error indicators
       const hasErrorMessage = this.containsOfflineIndicator(afterSource);
       const hasCrashed = await this.checkForCrash(driver);
 
@@ -133,7 +134,6 @@ export class NetworkChaos {
         result.details = 'App properly shows offline error/indicator';
         result.passed = true;
       } else {
-        // Check if data is still displayed (cached data)
         const hasContent = afterSource.length > 500;
         if (hasContent) {
           result.details = 'App shows cached data while offline (acceptable)';
@@ -144,17 +144,13 @@ export class NetworkChaos {
         }
       }
 
-      // Restore network
       await this.toggleAirplaneMode(driver, platform, false);
       await driver.pause(2000);
     } catch (err) {
       result.details = `Offline behavior test error: ${err}`;
-      // Attempt to restore network
-      try {
-        await this.resetNetwork(driver);
-      } catch {
-        /* best effort */
-      }
+      await this.resetNetwork(driver).catch((e) =>
+        this.logger.warn('network reset during error path failed', { error: String(e) }),
+      );
     }
 
     this.logger.log('Offline behavior test complete', { passed: result.passed });
@@ -171,30 +167,23 @@ export class NetworkChaos {
     try {
       const platform = await this.detectPlatform(driver);
 
-      // Go offline
       await this.toggleAirplaneMode(driver, platform, true);
       await driver.pause(3000);
 
-      // Perform an action that requires network (e.g., pull to refresh)
+      // Pull-to-refresh gesture while offline (expected to surface an error UI).
       try {
         const size = await driver.getWindowSize();
-        await driver.touchAction([
-          { action: 'press', x: size.width / 2, y: size.height * 0.3 },
-          { action: 'wait', ms: 100 },
-          { action: 'moveTo', x: size.width / 2, y: size.height * 0.7 },
-          { action: 'release' },
-        ]);
-      } catch {
-        /* swipe gesture optional */
+        const cx = Math.floor(size.width / 2);
+        await swipeFromTo(driver, cx, Math.floor(size.height * 0.3), cx, Math.floor(size.height * 0.7), 250);
+      } catch (err) {
+        this.logger.debug('pull-to-refresh gesture failed (not fatal)', { error: String(err) });
       }
 
       await driver.pause(1000);
 
-      // Reconnect
       await this.toggleAirplaneMode(driver, platform, false);
-      await driver.pause(5000); // Give time for auto-retry
+      await driver.pause(5000);
 
-      // Check if app recovered
       const source = await driver.getPageSource();
       const hasCrashed = await this.checkForCrash(driver);
 
@@ -212,11 +201,9 @@ export class NetworkChaos {
       result.errorScreenshot = await driver.takeScreenshot().catch(() => undefined);
     } catch (err) {
       result.details = `Reconnection test error: ${err}`;
-      try {
-        await this.resetNetwork(driver);
-      } catch {
-        /* best effort */
-      }
+      await this.resetNetwork(driver).catch((e) =>
+        this.logger.warn('network reset during error path failed', { error: String(e) }),
+      );
     }
 
     this.logger.log('Reconnection test complete', { passed: result.passed });

@@ -4,6 +4,8 @@ import { getAppiumCapabilities } from '../../config/appium-caps';
 import { Device } from '../../config/devices';
 import { BddScenario, GherkinStep, TestResult } from '../../types';
 import { GestureExecutor } from './gestures';
+import { ElementResolver, ResolvedTarget } from './element-resolver';
+import { LocatorCache } from '../knowledge-base/locator-cache';
 import { Logger } from '../../utils/logger';
 
 const logger = new Logger('TestExecutor');
@@ -20,18 +22,33 @@ interface SessionInfo {
   sessionId: string;
   driver: any;
   device: Device;
+  resolver: ElementResolver;
+}
+
+export interface ExecuteTestsOptions {
+  appVersion?: string;
+  cache?: LocatorCache;
 }
 
 export class TestExecutor {
   private config: BrowserStackConfig;
   private gestures: GestureExecutor;
+  private cache?: LocatorCache;
+  private appVersion?: string;
 
   constructor() {
     this.config = getBrowserStackConfig();
     this.gestures = new GestureExecutor();
   }
 
-  async executeTests(appUrl: string, scenarios: BddScenario[], devices: Device[]): Promise<TestResult[]> {
+  async executeTests(
+    appUrl: string,
+    scenarios: BddScenario[],
+    devices: Device[],
+    options: ExecuteTestsOptions = {},
+  ): Promise<TestResult[]> {
+    this.cache = options.cache;
+    this.appVersion = options.appVersion;
     const results: TestResult[] = [];
 
     for (const device of devices) {
@@ -44,7 +61,16 @@ export class TestExecutor {
         for (let i = 0; i < scenarios.length; i++) {
           // Reset app state between scenarios to prevent state leakage
           if (i > 0) {
-            try { await session.driver.resetApp(); await new Promise(r => setTimeout(r, 2000)); } catch { /* reset not supported on all platforms */ }
+            try {
+              await session.driver.resetApp();
+              await new Promise((r) => setTimeout(r, 2000));
+            } catch (err) {
+              logger.debug('resetApp not supported on this session; scenarios may share state', {
+                device: device.name,
+                error: String(err).slice(0, 200),
+              });
+            }
+            session.resolver.invalidateScreen();
           }
           const result = await this.executeScenario(session, scenarios[i]);
           results.push(result);
@@ -136,38 +162,47 @@ export class TestExecutor {
       sessionId,
       driver: new WebDriverClient(sessionId, this.config),
       device,
+      resolver: new ElementResolver(),
     };
+  }
+
+  private platformOf(device: Device): 'android' | 'ios' {
+    return device.platform === 'iOS' ? 'ios' : 'android';
   }
 
   private async executeScenario(session: SessionInfo, scenario: BddScenario): Promise<TestResult> {
     const startTime = Date.now();
+    logger.log('Executing scenario', { scenario: scenario.scenario, device: session.device.name });
 
-    try {
-      logger.log('Executing scenario', { scenario: scenario.scenario, device: session.device.name });
-
-      for (const step of scenario.steps) {
+    // Gherkin scenarios are semantically "all-or-nothing" — a failed When invalidates every
+    // subsequent Then. We stop on the first failure, but we DO record which step index and
+    // which step text triggered it so the PR comment and bug report can point to the exact
+    // failing line instead of a generic scenario-level error.
+    for (let i = 0; i < scenario.steps.length; i++) {
+      const step = scenario.steps[i];
+      try {
         await this.executeStep(session, step);
+      } catch (error) {
+        const failingStep = `${step.keyword} ${step.text}`;
+        const msg = error instanceof Error ? error.message : String(error);
+        return {
+          scenario: scenario.scenario,
+          status: 'fail',
+          device: session.device.name,
+          sessionId: session.sessionId,
+          duration: Date.now() - startTime,
+          error: `Step ${i + 1}/${scenario.steps.length} failed — "${failingStep}": ${msg}`,
+        };
       }
-
-      return {
-        scenario: scenario.scenario,
-        status: 'pass',
-        device: session.device.name,
-        sessionId: session.sessionId,
-        duration: Date.now() - startTime,
-        // Screenshots are accessible via BrowserStack session URL — no need to embed base64 here
-      };
-    } catch (error) {
-      return {
-        scenario: scenario.scenario,
-        status: 'fail',
-        device: session.device.name,
-        sessionId: session.sessionId,
-        duration: Date.now() - startTime,
-        error: String(error),
-        // Screenshots are accessible via BrowserStack session URL — no need to embed base64 here
-      };
     }
+
+    return {
+      scenario: scenario.scenario,
+      status: 'pass',
+      device: session.device.name,
+      sessionId: session.sessionId,
+      duration: Date.now() - startTime,
+    };
   }
 
   private async executeStep(session: SessionInfo, step: GherkinStep, maxRetries = 3): Promise<void> {
@@ -179,39 +214,51 @@ export class TestExecutor {
 
     while (attempt <= maxRetries) {
       try {
-        // Predictive gatekeeping: wait for element availability before interacting
-        if (['tap', 'type', 'longpress'].includes(action.type) && action.target) {
-          await this.waitForElement(session.driver, action.target, TIMEOUTS.ELEMENT_WAIT, session.device);
-        }
-
         switch (action.type) {
-          case 'tap':
-            await this.gestures.tap(session.driver, action.target!);
+          case 'tap': {
+            const target = await this.waitAndResolve(session, action.target!, 'tap', TIMEOUTS.ELEMENT_WAIT);
+            await this.gestures.tap(session.driver, target);
+            session.resolver.invalidateScreen();
             break;
-          case 'type':
-            await session.driver.sendKeys(action.target!, action.value!);
+          }
+          case 'type': {
+            const target = await this.waitAndResolve(session, action.target!, 'type', TIMEOUTS.ELEMENT_WAIT);
+            // Tap to focus the input, then send keys to the focused element. This works
+            // even if the input has no accessibility id — the prior approach hardcoded
+            // sendKeys to 'accessibility id' and crashed on unidentified inputs.
+            await this.gestures.tap(session.driver, target);
+            await this.gestures.sendKeysToFocused(session.driver, action.value!);
+            session.resolver.invalidateScreen();
             break;
+          }
           case 'swipe':
             await this.gestures.swipe(session.driver, action.direction as any);
+            session.resolver.invalidateScreen();
             break;
           case 'scroll':
             await this.gestures.scroll(session.driver, action.direction as any);
+            session.resolver.invalidateScreen();
             break;
-          case 'longpress':
-            await this.gestures.longPress(session.driver, action.target!, action.duration);
+          case 'longpress': {
+            const target = await this.waitAndResolve(session, action.target!, 'longpress', TIMEOUTS.ELEMENT_WAIT);
+            await this.gestures.longPress(session.driver, target, action.duration);
+            session.resolver.invalidateScreen();
             break;
-          case 'wait':
-            await this.waitForElement(session.driver, action.target!, action.duration || TIMEOUTS.ELEMENT_ASSERT_WAIT, session.device);
+          }
+          case 'wait': {
+            await this.waitAndResolve(session, action.target!, 'wait', action.duration || TIMEOUTS.ELEMENT_ASSERT_WAIT);
             break;
-          case 'assert_visible':
-            await this.waitForElement(session.driver, action.target!, TIMEOUTS.ELEMENT_ASSERT_WAIT, session.device);
-            await this.assertElementVisible(session.driver, action.target!, session.device);
+          }
+          case 'assert_visible': {
+            await this.waitAndResolve(session, action.target!, 'assert', TIMEOUTS.ELEMENT_ASSERT_WAIT);
             break;
+          }
           case 'assert_text':
             await this.assertElementText(session.driver, action.target!, action.value!);
             break;
           case 'back':
             await session.driver.back();
+            session.resolver.invalidateScreen();
             break;
           case 'screenshot':
             await session.driver.takeScreenshot();
@@ -235,8 +282,49 @@ export class TestExecutor {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         delayMs *= 2; // Exponential backoff
         attempt++;
+        // Force a fresh page-source pull on retry — UI may have changed.
+        session.resolver.invalidateScreen();
       }
     }
+  }
+
+  // Resolve a hint via the 5-tier ElementResolver, polling until the timeout. Returns
+  // a ResolvedTarget the gesture executor can act on. Replaces the previous
+  // strategy-loop in waitForElement.
+  private async waitAndResolve(
+    session: SessionInfo,
+    hint: string,
+    intent: 'tap' | 'longpress' | 'assert' | 'wait' | 'type',
+    timeoutMs: number,
+  ): Promise<ResolvedTarget> {
+    const start = Date.now();
+    let pollInterval = 500;
+    let lastUnresolved: ResolvedTarget | null = null;
+
+    while (Date.now() - start < timeoutMs) {
+      const resolved = await session.resolver.resolve(
+        {
+          driver: session.driver,
+          platform: this.platformOf(session.device),
+          appVersion: this.appVersion,
+          cache: this.cache,
+          intent,
+        },
+        hint,
+      );
+      if (resolved.kind !== 'unresolved') return resolved;
+      lastUnresolved = resolved;
+      session.resolver.invalidateScreen();
+      await new Promise((r) => setTimeout(r, pollInterval));
+      pollInterval = Math.min(pollInterval * 1.5, 2000);
+    }
+
+    const visible = lastUnresolved && lastUnresolved.kind === 'unresolved' ? lastUnresolved.visibleLabels?.slice(0, 10) ?? [] : [];
+    throw new Error(
+      `Element "${hint}" not found within ${timeoutMs}ms. ` +
+        `Tried: ${(lastUnresolved && lastUnresolved.kind === 'unresolved' ? lastUnresolved.tried : []).join(', ')}. ` +
+        `Visible labels on screen: ${visible.length ? visible.join(', ') : '(none)'}.`,
+    );
   }
 
   private parseStepAction(text: string): {
@@ -268,16 +356,18 @@ export class TestExecutor {
 
     // Tap / click / press — handles: tap, taps, tapped, click, clicks, clicked, press, presses, pressed
     // Also handles: "user taps on X", "taps the X button", "tap 'X'"
+    // Target preserves the original visible label (case + spaces) so the resolver can
+    // fuzzy-match against page-source text/label/contentDesc attrs without mangling.
     const tapMatch = text.match(/\b(?:tap|taps|tapped|click|clicks|clicked|press|presses|pressed)\b\s+(?:on\s+|the\s+)?["']?([^"',]+?)["']?\s*(?:button|field|screen|icon|tab|link|toggle|switch|option|menu|bar|item|input|label)?[\s,]*$/i);
-    if (tapMatch) return { type: 'tap', target: tapMatch[1].trim().replace(/\s+/g, '_').toLowerCase() };
+    if (tapMatch) return { type: 'tap', target: tapMatch[1].trim() };
 
     // Type/input — "enters 'value' in 'field'" / "types 'X' into field"
     const typeMatch = text.match(/\b(?:type|types|typed|enter|enters|entered|input|inputs|fill|fills|filled)\b\s+["']([^"']+)["']\s+(?:in|into|on)\s+(?:the\s+)?["']?([^"']+?)["']?\s*(?:field|input|box)?[\s,]*$/i);
-    if (typeMatch) return { type: 'type', target: typeMatch[2].trim().replace(/\s+/g, '_').toLowerCase(), value: typeMatch[1] };
+    if (typeMatch) return { type: 'type', target: typeMatch[2].trim(), value: typeMatch[1] };
 
     // Type without target field
     const typeMatch2 = text.match(/\b(?:type|types|enter|enters|input|inputs|fill|fills)\b\s+["']([^"']+)["']/i);
-    if (typeMatch2) return { type: 'type', target: 'input_field', value: typeMatch2[1] };
+    if (typeMatch2) return { type: 'type', target: 'input', value: typeMatch2[1] };
 
     // Swipe patterns
     const swipeMatch = text.match(/\bswipes?\s+(left|right|up|down)\b/i);
@@ -307,59 +397,10 @@ export class TestExecutor {
     // Last-resort: if step contains a quoted string, try tapping it
     const quotedFallback = text.match(/["']([^"']+)["']/);
     if (quotedFallback && (lower.includes('tap') || lower.includes('click') || lower.includes('press') || lower.includes('select') || lower.includes('open'))) {
-      return { type: 'tap', target: quotedFallback[1].trim().replace(/\s+/g, '_').toLowerCase() };
+      return { type: 'tap', target: quotedFallback[1].trim() };
     }
 
     return { type: 'unknown' };
-  }
-
-  private getLocatorStrategies(device?: Device): string[] {
-    if (device?.platform === 'iOS') {
-      return ['accessibility id', 'name', 'xpath'];
-    }
-    return ['accessibility id', 'id', 'xpath'];
-  }
-
-  private async waitForElement(driver: any, elementId: string, timeoutMs: number, device?: Device): Promise<void> {
-    const strategies = this.getLocatorStrategies(device);
-    const start = Date.now();
-    let pollInterval = 500;
-    while (Date.now() - start < timeoutMs) {
-      for (const strategy of strategies) {
-        try {
-          const selector = strategy === 'xpath'
-            ? `//*[contains(@text,"${elementId}") or contains(@content-desc,"${elementId}") or contains(@label,"${elementId}") or contains(@name,"${elementId}")]`
-            : elementId;
-          const el = await driver.findElement(strategy, selector);
-          if (el) return;
-        } catch {
-          // element not found with this strategy
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-      pollInterval = Math.min(pollInterval * 1.5, 2000);
-    }
-    throw new Error(`Wait timeout: Element "${elementId}" not found within ${timeoutMs}ms`);
-  }
-
-  private async assertElementVisible(driver: any, elementId: string, device?: Device): Promise<void> {
-    const strategies = this.getLocatorStrategies(device);
-    for (const strategy of strategies) {
-      try {
-        const selector =
-          strategy === 'xpath'
-            ? `//*[contains(@text,"${elementId}") or contains(@content-desc,"${elementId}") or contains(@label,"${elementId}") or contains(@name,"${elementId}")]`
-            : elementId;
-        const el = await driver.findElement(strategy, selector);
-        if (el) {
-          const displayed = await driver.isElementDisplayed(el.ELEMENT || el);
-          if (displayed) return;
-        }
-      } catch {
-        continue;
-      }
-    }
-    throw new Error(`Element "${elementId}" is not visible`);
   }
 
   private async assertElementText(driver: any, elementId: string, expectedText: string): Promise<void> {
@@ -464,9 +505,29 @@ class WebDriverClient {
     return res.data.value;
   }
 
-  async sendKeys(elementId: string, text: string): Promise<void> {
-    const el = await this.findElement('accessibility id', elementId);
+  // Send keys to a specific element. Strategy is required — the previous version
+  // hardcoded 'accessibility id', which crashed on apps without identifiers. Callers
+  // that don't have an identifier should use sendKeysToActiveElement instead.
+  async sendKeys(strategy: string, value: string, text: string): Promise<void> {
+    const el = await this.findElement(strategy, value);
     const elId = el.ELEMENT || el[Object.keys(el)[0]];
+    await axios.post(
+      `${this.baseUrl}/element/${elId}/value`,
+      { text, value: text.split('') },
+      { auth: this.auth, timeout: 30000 },
+    );
+  }
+
+  // Type into whatever input is currently focused. Used by GestureExecutor.sendKeysToFocused
+  // after a tap-to-focus, so apps without testIDs on inputs still work.
+  async sendKeysToActiveElement(text: string): Promise<void> {
+    const active = await axios.get(`${this.baseUrl}/element/active`, {
+      auth: this.auth,
+      timeout: 30000,
+    });
+    const el = active.data.value;
+    const elId = el.ELEMENT || el[Object.keys(el)[0]];
+    if (!elId) throw new Error('No active element on screen — tap an input first');
     await axios.post(
       `${this.baseUrl}/element/${elId}/value`,
       { text, value: text.split('') },

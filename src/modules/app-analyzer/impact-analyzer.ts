@@ -109,33 +109,55 @@ export class ImpactAnalyzer {
     });
 
     if (sharedChanges.length > 0) {
-      // Navigation changes affect all screens
+      // Navigation changes: instead of flagging every screen (useless over-broad signal),
+      // scan the patch content and flag only screens whose name actually appears in the diff.
+      // If the patch is empty/unavailable, fall back to "no indirect nav impact" rather than
+      // the old "everything is affected" behaviour.
       const navChanges = sharedChanges.filter((f) => {
         const p = f.path.toLowerCase();
         return p.includes('navigation') || p.includes('route') || p.includes('router');
       });
 
       if (navChanges.length > 0) {
-        for (const screen of screens) {
-          if (!directlyAffected.includes(screen.name)) {
-            indirect.push(screen.name);
+        const patchBlob = navChanges
+          .map((f) => f.patch || '')
+          .join('\n')
+          .toLowerCase();
+        if (patchBlob.length > 0) {
+          for (const screen of screens) {
+            if (directlyAffected.includes(screen.name)) continue;
+            const screenName = screen.name.toLowerCase();
+            if (screenName.length < 3) continue; // avoid false positives on very short names
+            if (patchBlob.includes(screenName)) {
+              indirect.push(screen.name);
+            }
           }
+        } else {
+          this.logger.debug(
+            'Navigation file changed but patch content unavailable; skipping indirect nav impact (would be over-broad)',
+          );
         }
-        return indirect;
       }
 
-      // Theme/style changes affect screens based on naming
+      // Theme/style changes: prefer scanning patch content so only screens referenced in the
+      // touched style/theme get flagged. If no patch is available fall back to a capped
+      // sample (max 5 screens) to avoid flooding the report with every screen as "affected".
       const themeChanges = sharedChanges.filter((f) => {
         const p = f.path.toLowerCase();
         return p.includes('theme') || p.includes('style') || p.includes('color');
       });
 
       if (themeChanges.length > 0) {
-        // Theme changes potentially affect all screens but at lower confidence
-        for (const screen of screens) {
-          if (!directlyAffected.includes(screen.name)) {
-            indirect.push(screen.name);
-          }
+        const patchBlob = themeChanges
+          .map((f) => f.patch || '')
+          .join('\n')
+          .toLowerCase();
+        const candidates = screens.filter((s) => !directlyAffected.includes(s.name) && !indirect.includes(s.name));
+        const matched = patchBlob.length > 0
+          ? candidates.filter((s) => s.name.length >= 3 && patchBlob.includes(s.name.toLowerCase()))
+          : candidates.slice(0, 5);
+        for (const screen of matched) {
+          indirect.push(screen.name);
         }
       }
 

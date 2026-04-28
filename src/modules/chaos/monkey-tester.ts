@@ -1,4 +1,5 @@
 import { Logger } from '../../utils/logger';
+import { tapAt, longPressAt, swipeFromTo } from '../browserstack/w3c-actions';
 
 export interface MonkeyTestResult {
   crashed: boolean;
@@ -114,53 +115,42 @@ export class MonkeyTester {
 
     switch (action) {
       case 'tap': {
-        const x = safeX();
-        const y = safeY();
-        await driver.touchAction([{ action: 'tap', x, y }]);
+        await tapAt(driver, safeX(), safeY());
         break;
       }
 
       case 'swipe': {
-        const startX = safeX();
-        const startY = safeY();
-        const endX = safeX();
-        const endY = safeY();
-        await driver.touchAction([
-          { action: 'press', x: startX, y: startY },
-          { action: 'wait', ms: 200 },
-          { action: 'moveTo', x: endX, y: endY },
-          { action: 'release' },
-        ]);
+        await swipeFromTo(driver, safeX(), safeY(), safeX(), safeY(), 200);
         break;
       }
 
       case 'scroll': {
-        const x = screenSize.width / 2;
+        const x = Math.floor(screenSize.width / 2);
         const startScrollY = Math.floor(screenSize.height * 0.7);
         const endScrollY = Math.floor(screenSize.height * 0.3);
-        const direction = Math.random() > 0.5 ? 1 : -1;
-        await driver.touchAction([
-          { action: 'press', x, y: direction > 0 ? startScrollY : endScrollY },
-          { action: 'wait', ms: 300 },
-          { action: 'moveTo', x, y: direction > 0 ? endScrollY : startScrollY },
-          { action: 'release' },
-        ]);
+        const downScroll = Math.random() > 0.5;
+        await swipeFromTo(
+          driver,
+          x,
+          downScroll ? startScrollY : endScrollY,
+          x,
+          downScroll ? endScrollY : startScrollY,
+          300,
+        );
         break;
       }
 
       case 'back': {
         try {
           await driver.back();
-        } catch {
-          /* back may not be supported on iOS home */
+        } catch (err) {
+          this.logger.debug('back() not supported (likely iOS home)', { error: String(err) });
         }
         break;
       }
 
       case 'longpress': {
-        const x = safeX();
-        const y = safeY();
-        await driver.touchAction([{ action: 'press', x, y }, { action: 'wait', ms: 1500 }, { action: 'release' }]);
+        await longPressAt(driver, safeX(), safeY(), 1500);
         break;
       }
     }

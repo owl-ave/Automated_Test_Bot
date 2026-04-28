@@ -5,6 +5,23 @@ import { Logger } from './logger';
 
 const logger = new Logger('GitHubClient');
 
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let delayMs = 500;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const retriable = !status || status === 429 || (status >= 500 && status < 600);
+      if (i === attempts || !retriable) throw error;
+      logger.warn(`[${label}] attempt ${i} failed (status=${status ?? 'network'}), retrying in ${delayMs}ms`);
+      await new Promise((r) => setTimeout(r, delayMs));
+      delayMs *= 2;
+    }
+  }
+  throw new Error(`[${label}] exhausted retries`);
+}
+
 interface GitHubAppConfig {
   appId: string;
   privateKey: string;
@@ -117,16 +134,14 @@ export class GitHubClient {
   async postComment(owner: string, repo: string, prNumber: number, body: string): Promise<void> {
     try {
       const headers = await this.headers();
-
       const existingId = await this.findBotComment(owner, repo, prNumber);
       if (existingId) {
         const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/comments/${existingId}`;
-        await axios.patch(url, { body }, { headers });
+        await withRetry('postComment.patch', () => axios.patch(url, { body }, { headers }));
         return;
       }
-
       const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/comments`;
-      await axios.post(url, { body }, { headers });
+      await withRetry('postComment.post', () => axios.post(url, { body }, { headers }));
     } catch (error: any) {
       logger.error('Failed to post comment', { owner, repo, prNumber, message: error.message });
       throw error;
@@ -158,7 +173,8 @@ export class GitHubClient {
   async addLabel(owner: string, repo: string, prNumber: number, labels: string[]): Promise<void> {
     try {
       const url = `${this.baseUrl}/repos/${owner}/${repo}/issues/${prNumber}/labels`;
-      await axios.post(url, { labels }, { headers: await this.headers() });
+      const headers = await this.headers();
+      await withRetry('addLabel', () => axios.post(url, { labels }, { headers }));
     } catch (error: any) {
       logger.error('Failed to add labels', { owner, repo, prNumber, labels, message: error.message });
       throw error;
@@ -186,10 +202,9 @@ export class GitHubClient {
   ): Promise<any> {
     try {
       const url = `${this.baseUrl}/repos/${owner}/${repo}/check-runs`;
-      const res = await axios.post(
-        url,
-        { name, head_sha: headSha, status: 'completed', conclusion, output },
-        { headers: await this.headers() },
+      const headers = await this.headers();
+      const res = await withRetry('createCheckRun', () =>
+        axios.post(url, { name, head_sha: headSha, status: 'completed', conclusion, output }, { headers }),
       );
       return res.data;
     } catch (error: any) {

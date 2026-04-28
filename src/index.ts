@@ -9,6 +9,15 @@ dotenv.config();
 const logger = new Logger('Pipeline');
 const retryConfig = getThresholds().retry;
 
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled promise rejection', reason);
+  process.exit(1);
+});
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception', err);
+  process.exit(1);
+});
+
 // Removes base64 screenshot blobs from log data to keep logs readable
 function stripScreenshots(data: unknown): unknown {
   if (!data || typeof data !== 'object') return data;
@@ -251,4 +260,7 @@ async function main(): Promise<void> {
   }
 }
 
-main();
+main().catch((err) => {
+  logger.error('Pipeline crashed', err);
+  process.exit(1);
+});

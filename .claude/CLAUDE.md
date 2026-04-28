@@ -8,6 +8,7 @@
 - **Batch work** — do multiple things in one response instead of spreading across many turns.
 - **Skip confirmations** like "I'll now do X" — just do X.
 - **Refer to plan.md** for module details instead of re-explaining them.
+- **For feature implementation**: when the user invokes `/implement-spec`, follow [.claude/WAYS_OF_WORKING.md](.claude/WAYS_OF_WORKING.md) strictly (TDD, very small steps, stop-and-confirm). The "batch work" and "skip confirmations" defaults above DO NOT apply during `/implement-spec` — that workflow requires explicit stops between steps.
 
 ## Project Overview
 A fully automated, zero human intervention testing bot for **Android and iOS mobile apps**. Triggers on GitHub PRs — reads the mobile app codebase, understands the app, generates BDD feature files, executes tests on **real devices via BrowserStack App Automate**, and reports results back on the PR.
@@ -217,10 +218,4 @@ npm run lint            # ESLint + Prettier check
 - Appium element locators: always prefer `accessibility ID` over XPath for stability
 - Platform-specific code should be in separate files (e.g., `android-a11y.ts`, `ios-a11y.ts`)
 
-## Implementation Order
-1. Phase 1 (Week 1-2): Foundation — project setup, GitHub Action, code reader, app build pipeline
-2. Phase 2 (Week 3-4): AI Brain — app analyzer, feature generator, test writer (Appium steps)
-3. Phase 3 (Week 5-6): Execution — BrowserStack App Automate, validator, self-healer, accessibility, visual regression, chaos
-4. Phase 4 (Week 7-8): Security + Performance — MobSF, app metrics, API testing, bug reproduction, Slack/Teams
-5. Phase 5 (Week 9-10): Intelligence — historical learning, ML prioritization, coverage, i18n
-6. Phase 6 (Week 11-12): Polish + Deploy — optimization, feedback loop, cost tracking, deploy as GitHub App
+

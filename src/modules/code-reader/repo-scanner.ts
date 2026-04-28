@@ -4,6 +4,10 @@ import { CodeAnalysis, Screen, ApiEndpoint } from '../../types';
 import { FrameworkDetector } from './framework-detector';
 import { Logger } from '../../utils/logger';
 
+function slug(value: string): string {
+  return value.replace(/\s+/g, '_').toLowerCase();
+}
+
 export class RepoScanner {
   private logger = new Logger('RepoScanner');
   private rootPath: string;
@@ -77,17 +81,157 @@ export class RepoScanner {
       const files = this.walkDir(path.join(mobilePath, searchDir));
       files.forEach((file) => {
         if (file.endsWith(fileExt)) {
+          let elements: { id: string; type: string; text?: string }[] = [];
+          try {
+            const content = fs.readFileSync(file, 'utf-8');
+            elements =
+              framework === 'react-native'
+                ? this.extractJsxLabels(content)
+                : this.extractFlutterLabels(content);
+          } catch {
+            /* ignore unreadable files */
+          }
           screens.push({
             name: path.basename(file, fileExt),
             path: file,
             type: 'screen',
-            elements: [],
+            elements,
           });
         }
       });
     }
 
     return screens;
+  }
+
+  // Extract labels from JSX/TSX sources for React Native screens. We don't try to be a
+  // real parser — these are matched by regex on the textual source. The goal is to give
+  // the resolver and ScenarioBrain a vocabulary of likely interactive labels even when
+  // the codebase has zero testIDs.
+  private extractJsxLabels(content: string): { id: string; type: string; text?: string }[] {
+    const out: { id: string; type: string; text?: string }[] = [];
+    const seen = new Set<string>();
+    const add = (id: string, type: string, text?: string) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push({ id, type, text });
+    };
+
+    // testID="x"
+    for (const m of content.matchAll(/testID\s*=\s*["']([^"']+)["']/g)) add(m[1], 'element');
+
+    // accessibilityLabel="x"
+    for (const m of content.matchAll(/accessibilityLabel\s*=\s*["']([^"']+)["']/g)) add(m[1], 'label');
+
+    // <Button title="X" /> and <Button>X</Button>
+    for (const m of content.matchAll(/<Button[^>]*title\s*=\s*["']([^"']+)["']/g))
+      add(slug(m[1]), 'button', m[1]);
+    for (const m of content.matchAll(/<Button[^>]*>([^<]+)<\/Button>/g))
+      add(slug(m[1].trim()), 'button', m[1].trim());
+
+    // <Text>...</Text> visible labels
+    for (const m of content.matchAll(/<Text[^>]*>([^<{}\n][^<{}]*?)<\/Text>/g)) {
+      const t = m[1].trim();
+      if (t && t.length < 60) add(slug(t), 'text', t);
+    }
+
+    // <TextInput placeholder="X" />
+    for (const m of content.matchAll(/<TextInput[^>]*placeholder\s*=\s*["']([^"']+)["']/g))
+      add(slug(m[1]), 'textfield', m[1]);
+
+    // <TouchableOpacity ... /> with onPress and an inner Text — capture the inner text
+    for (const m of content.matchAll(/<TouchableOpacity[^>]*>\s*<Text[^>]*>([^<{}]+)<\/Text>/g)) {
+      const t = m[1].trim();
+      if (t && t.length < 60) add(slug(t), 'button', t);
+    }
+
+    return out;
+  }
+
+  // Kotlin / Jetpack Compose / View XML label extraction. Catches Compose Text/Button
+  // composables, View setText calls, and contentDescription. Same regex caveats as
+  // the JSX extractor — best-effort vocabulary, not a parser.
+  private extractKotlinLabels(content: string): { id: string; type: string; text?: string }[] {
+    const out: { id: string; type: string; text?: string }[] = [];
+    const seen = new Set<string>();
+    const add = (id: string, type: string, text?: string) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push({ id, type, text });
+    };
+
+    // Compose: Text("X")
+    for (const m of content.matchAll(/\bText\s*\(\s*"([^"]+)"/g)) {
+      const t = m[1];
+      if (t.length < 60) add(slug(t), 'text', t);
+    }
+    // Compose: Text(text = "X") — keyword form
+    for (const m of content.matchAll(/\bText\s*\(\s*text\s*=\s*"([^"]+)"/g)) {
+      const t = m[1];
+      if (t.length < 60) add(slug(t), 'text', t);
+    }
+
+    // Compose: Button(...) { Text("X") } — capture inner Text
+    for (const m of content.matchAll(
+      /\b(?:Button|OutlinedButton|TextButton|FloatingActionButton|IconButton)\s*\([^)]*\)\s*\{[\s\S]{0,200}?Text\s*\(\s*"([^"]+)"/g,
+    )) {
+      add(slug(m[1]), 'button', m[1]);
+    }
+
+    // Compose: TextField(label = { Text("X") }, ...)
+    for (const m of content.matchAll(/label\s*=\s*\{\s*Text\s*\(\s*"([^"]+)"/g))
+      add(slug(m[1]), 'textfield', m[1]);
+
+    // View binding: button.text = "X" / button.setText("X")
+    for (const m of content.matchAll(/\.text\s*=\s*"([^"]+)"/g)) {
+      const t = m[1];
+      if (t.length < 60) add(slug(t), 'text', t);
+    }
+    for (const m of content.matchAll(/\.setText\s*\(\s*"([^"]+)"/g)) {
+      const t = m[1];
+      if (t.length < 60) add(slug(t), 'text', t);
+    }
+
+    // contentDescription
+    for (const m of content.matchAll(/contentDescription\s*=\s*"([^"]+)"/g))
+      add(slug(m[1]), 'label', m[1]);
+
+    return out;
+  }
+
+  // Flutter widget label extraction — Text("X"), ElevatedButton/TextButton(child: Text("X")),
+  // TextField(decoration: InputDecoration(labelText: "X")). Regex-based, same caveats.
+  private extractFlutterLabels(content: string): { id: string; type: string; text?: string }[] {
+    const out: { id: string; type: string; text?: string }[] = [];
+    const seen = new Set<string>();
+    const add = (id: string, type: string, text?: string) => {
+      if (!id || seen.has(id)) return;
+      seen.add(id);
+      out.push({ id, type, text });
+    };
+
+    // Text("X")
+    for (const m of content.matchAll(/\bText\s*\(\s*['"]([^'"]+)['"]/g)) {
+      const t = m[1];
+      if (t.length < 60) add(slug(t), 'text', t);
+    }
+
+    // ElevatedButton / TextButton / OutlinedButton with child: Text("X")
+    for (const m of content.matchAll(
+      /\b(?:ElevatedButton|TextButton|OutlinedButton|FilledButton|FloatingActionButton)\b[\s\S]{0,200}?Text\s*\(\s*['"]([^'"]+)['"]/g,
+    )) {
+      add(slug(m[1]), 'button', m[1]);
+    }
+
+    // labelText / hintText for inputs
+    for (const m of content.matchAll(/(?:labelText|hintText)\s*:\s*['"]([^'"]+)['"]/g))
+      add(slug(m[1]), 'textfield', m[1]);
+
+    // Semantics(label: 'X') — Flutter accessibility
+    for (const m of content.matchAll(/Semantics\s*\([^)]*label\s*:\s*['"]([^'"]+)['"]/g))
+      add(slug(m[1]), 'label', m[1]);
+
+    return out;
   }
 
   private scanSwiftScreens(mobilePath: string): Screen[] {
@@ -177,11 +321,11 @@ export class RepoScanner {
           const name = path.basename(file, '.kt');
 
           if (/:\s*(AppCompat)?Activity\b/.test(content) || /:\s*ComponentActivity\b/.test(content)) {
-            screens.push({ name, path: file, type: 'activity', elements: [] });
+            screens.push({ name, path: file, type: 'activity', elements: this.extractKotlinLabels(content) });
           } else if (/:\s*Fragment\b/.test(content)) {
-            screens.push({ name, path: file, type: 'fragment', elements: [] });
+            screens.push({ name, path: file, type: 'fragment', elements: this.extractKotlinLabels(content) });
           } else if (content.includes('@Composable')) {
-            screens.push({ name, path: file, type: 'composable', elements: [] });
+            screens.push({ name, path: file, type: 'composable', elements: this.extractKotlinLabels(content) });
           }
         } catch { /* ignore unreadable files */ }
       }

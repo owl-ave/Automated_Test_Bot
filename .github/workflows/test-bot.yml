@@ -19,6 +19,16 @@ on:
 env:
   NODE_ENV: production
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+  checks: write
+
+concurrency:
+  group: test-bot-${{ github.event.inputs.repo }}-${{ github.event.inputs.pr_number }}
+  cancel-in-progress: true
+
 jobs:
   # ── Detect target app platform ──
   detect:

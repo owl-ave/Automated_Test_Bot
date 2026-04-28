@@ -1,4 +1,6 @@
 import { Logger } from '../../utils/logger';
+import { tapAt, longPressAt } from './w3c-actions';
+import type { ResolvedTarget } from './element-resolver';
 
 const logger = new Logger('GestureExecutor');
 
@@ -18,39 +20,56 @@ interface Action {
   origin?: string | { [key: string]: string };
 }
 
+// Resolve a string-or-target argument into tap coordinates. When given a string we
+// treat it as an Appium element id (legacy callers). When given a ResolvedTarget we
+// use coords directly or look up the element by strategy.
+async function resolveToCoords(
+  driver: any,
+  target: string | ResolvedTarget,
+): Promise<{ x: number; y: number }> {
+  if (typeof target === 'string') {
+    const element = await driver.findElement('id', target);
+    return getElementCenterFromDriver(driver, element);
+  }
+  if (target.kind === 'coords') {
+    return { x: target.x, y: target.y };
+  }
+  if (target.kind === 'locator') {
+    const element = await driver.findElement(target.strategy, target.value);
+    return getElementCenterFromDriver(driver, element);
+  }
+  throw new Error('Cannot resolve unresolved target — resolver returned no element');
+}
+
+async function getElementCenterFromDriver(
+  driver: any,
+  element: any,
+): Promise<{ x: number; y: number }> {
+  const id = element.ELEMENT || element['element-6066-11e4-a52e-4f735466cecf'] || element;
+  const rect = await driver.getElementRect(id);
+  return {
+    x: Math.floor(rect.x + rect.width / 2),
+    y: Math.floor(rect.y + rect.height / 2),
+  };
+}
+
 export class GestureExecutor {
-  async tap(driver: any, elementId: string): Promise<void> {
-    logger.debug('Tap', { elementId });
-    const element = await driver.findElement('id', elementId);
-    const location = await this.getElementCenter(driver, element);
-
-    const actions: ActionSequence = {
-      type: 'pointer',
-      id: 'finger1',
-      parameters: { pointerType: 'touch' },
-      actions: [
-        { type: 'pointerMove', duration: 0, x: location.x, y: location.y },
-        { type: 'pointerDown', button: 0 },
-        { type: 'pause', duration: 50 },
-        { type: 'pointerUp', button: 0 },
-      ],
-    };
-
-    await driver.performActions([actions]);
-    await driver.releaseActions();
+  async tap(driver: any, target: string | ResolvedTarget): Promise<void> {
+    logger.debug('Tap', { target });
+    const { x, y } = await resolveToCoords(driver, target);
+    await tapAt(driver, x, y);
   }
 
-  async doubleTap(driver: any, elementId: string): Promise<void> {
-    logger.debug('DoubleTap', { elementId });
-    const element = await driver.findElement('id', elementId);
-    const location = await this.getElementCenter(driver, element);
+  async doubleTap(driver: any, target: string | ResolvedTarget): Promise<void> {
+    logger.debug('DoubleTap', { target });
+    const { x, y } = await resolveToCoords(driver, target);
 
     const actions: ActionSequence = {
       type: 'pointer',
       id: 'finger1',
       parameters: { pointerType: 'touch' },
       actions: [
-        { type: 'pointerMove', duration: 0, x: location.x, y: location.y },
+        { type: 'pointerMove', duration: 0, x, y },
         { type: 'pointerDown', button: 0 },
         { type: 'pause', duration: 50 },
         { type: 'pointerUp', button: 0 },
@@ -65,25 +84,28 @@ export class GestureExecutor {
     await driver.releaseActions();
   }
 
-  async longPress(driver: any, elementId: string, durationMs: number = 2000): Promise<void> {
-    logger.debug('LongPress', { elementId, durationMs });
-    const element = await driver.findElement('id', elementId);
-    const location = await this.getElementCenter(driver, element);
+  async longPress(
+    driver: any,
+    target: string | ResolvedTarget,
+    durationMs: number = 2000,
+  ): Promise<void> {
+    logger.debug('LongPress', { target, durationMs });
+    const { x, y } = await resolveToCoords(driver, target);
+    await longPressAt(driver, x, y, durationMs);
+  }
 
-    const actions: ActionSequence = {
-      type: 'pointer',
-      id: 'finger1',
-      parameters: { pointerType: 'touch' },
-      actions: [
-        { type: 'pointerMove', duration: 0, x: location.x, y: location.y },
-        { type: 'pointerDown', button: 0 },
-        { type: 'pause', duration: durationMs },
-        { type: 'pointerUp', button: 0 },
-      ],
-    };
-
-    await driver.performActions([actions]);
-    await driver.releaseActions();
+  // Type into the currently-focused input. Caller must have just tapped the field.
+  // Uses W3C "active element" endpoint so no element id is required — works on apps
+  // that don't expose accessibility identifiers on text inputs.
+  async sendKeysToFocused(driver: any, text: string): Promise<void> {
+    logger.debug('SendKeysToFocused', { length: text.length });
+    if (typeof driver.sendKeysToActiveElement === 'function') {
+      await driver.sendKeysToActiveElement(text);
+      return;
+    }
+    // Fallback: callers that don't implement the helper can still use the legacy
+    // sendKeys with whatever id-style hint they have.
+    throw new Error('Driver does not implement sendKeysToActiveElement');
   }
 
   async swipe(
@@ -168,12 +190,14 @@ export class GestureExecutor {
     await driver.releaseActions();
   }
 
-  async dragDrop(driver: any, fromId: string, toId: string): Promise<void> {
-    logger.debug('DragDrop', { fromId, toId });
-    const fromElement = await driver.findElement('id', fromId);
-    const toElement = await driver.findElement('id', toId);
-    const fromLoc = await this.getElementCenter(driver, fromElement);
-    const toLoc = await this.getElementCenter(driver, toElement);
+  async dragDrop(
+    driver: any,
+    from: string | ResolvedTarget,
+    to: string | ResolvedTarget,
+  ): Promise<void> {
+    logger.debug('DragDrop', { from, to });
+    const fromLoc = await resolveToCoords(driver, from);
+    const toLoc = await resolveToCoords(driver, to);
 
     const actions: ActionSequence = {
       type: 'pointer',
@@ -191,14 +215,6 @@ export class GestureExecutor {
 
     await driver.performActions([actions]);
     await driver.releaseActions();
-  }
-
-  private async getElementCenter(driver: any, element: any): Promise<{ x: number; y: number }> {
-    const rect = await driver.getElementRect(element.ELEMENT || element);
-    return {
-      x: Math.floor(rect.x + rect.width / 2),
-      y: Math.floor(rect.y + rect.height / 2),
-    };
   }
 
   private async getScreenSize(driver: any): Promise<{ width: number; height: number }> {

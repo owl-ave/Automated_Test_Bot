@@ -15,29 +15,45 @@ export class FlakyDetector {
   private logger = new Logger('FlakyDetector');
   private quarantined = new Set<string>();
 
+  // Flakiness must be measured per device. A test that always passes on iOS and always fails on
+  // Android is NOT flaky — it's platform-specific. Computing transitions across all runs (mixed
+  // devices) inflates the score because pass/fail alternates with device, not with time on the
+  // same device. We require the SAME device to show both outcomes before calling it flaky.
   detect(scenario: string, recentRuns: TestRunRecord[]): FlakyResult {
     if (recentRuns.length < MIN_RUNS_FOR_DETECTION) {
       return { isFlaky: false, flakinessScore: 0, affectedDevices: [] };
     }
 
-    const hasPasses = recentRuns.some((r) => r.status === 'pass');
-    const hasFailures = recentRuns.some((r) => r.status === 'fail');
-
-    if (!hasPasses || !hasFailures) {
-      return { isFlaky: false, flakinessScore: 0, affectedDevices: [] };
+    const byDevice = new Map<string, TestRunRecord[]>();
+    for (const run of recentRuns) {
+      const list = byDevice.get(run.device) || [];
+      list.push(run);
+      byDevice.set(run.device, list);
     }
 
-    // Compute flakiness as the ratio of status transitions
-    const transitions = this.countTransitions(recentRuns);
-    const maxTransitions = recentRuns.length - 1;
-    const flakinessScore = maxTransitions > 0 ? transitions / maxTransitions : 0;
+    let worstScore = 0;
+    const affectedDevices: string[] = [];
 
-    const affectedDevices = this.findAffectedDevices(recentRuns);
-    const isFlaky = flakinessScore >= FLAKY_THRESHOLD;
+    for (const [device, runs] of byDevice) {
+      if (runs.length < 2) continue;
+      const passes = runs.filter((r) => r.status === 'pass').length;
+      const fails = runs.filter((r) => r.status === 'fail').length;
+      if (passes === 0 || fails === 0) continue; // consistent on this device — not flaky
+
+      const transitions = this.countTransitions(runs);
+      const maxTransitions = runs.length - 1;
+      const score = maxTransitions > 0 ? transitions / maxTransitions : 0;
+      if (score >= FLAKY_THRESHOLD) {
+        affectedDevices.push(device);
+      }
+      if (score > worstScore) worstScore = score;
+    }
+
+    const isFlaky = affectedDevices.length > 0;
 
     if (isFlaky) {
       this.logger.warn(`Flaky test detected: "${scenario}"`, {
-        flakinessScore: Math.round(flakinessScore * 100) / 100,
+        flakinessScore: Math.round(worstScore * 100) / 100,
         affectedDevices,
         runs: recentRuns.length,
       });
@@ -45,7 +61,7 @@ export class FlakyDetector {
 
     return {
       isFlaky,
-      flakinessScore: Math.round(flakinessScore * 100) / 100,
+      flakinessScore: Math.round(worstScore * 100) / 100,
       affectedDevices,
     };
   }
@@ -78,23 +94,4 @@ export class FlakyDetector {
     return transitions;
   }
 
-  private findAffectedDevices(runs: TestRunRecord[]): string[] {
-    const deviceResults = new Map<string, Set<string>>();
-
-    for (const run of runs) {
-      if (!deviceResults.has(run.device)) {
-        deviceResults.set(run.device, new Set());
-      }
-      deviceResults.get(run.device)!.add(run.status);
-    }
-
-    // Devices that have both pass and fail are "affected"
-    const affected: string[] = [];
-    for (const [device, statuses] of deviceResults) {
-      if (statuses.has('pass') && statuses.has('fail')) {
-        affected.push(device);
-      }
-    }
-    return affected;
-  }
 }

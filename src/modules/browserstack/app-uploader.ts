@@ -1,6 +1,7 @@
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import FormData from 'form-data';
 import { getBrowserStackConfig, BrowserStackConfig } from '../../config/browserstack';
 import { Logger } from '../../utils/logger';
 
@@ -32,21 +33,26 @@ export class AppUploader {
 
     logger.log('Uploading app to BrowserStack', { path: resolvedPath, customId });
 
-    const formData = new FormData();
-    const fileBuffer = fs.readFileSync(resolvedPath);
-    const blob = new Blob([fileBuffer]);
-    formData.append('file', blob, path.basename(resolvedPath));
-    formData.append('custom_id', customId);
+    const fileSize = (await fs.promises.stat(resolvedPath)).size;
 
     for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
+      const formData = new FormData();
+      formData.append('file', fs.createReadStream(resolvedPath), {
+        filename: path.basename(resolvedPath),
+        knownLength: fileSize,
+      });
+      formData.append('custom_id', customId);
+
       try {
         const response = await axios.post(`${this.config.appAutomateUrl}/upload`, formData, {
           auth: {
             username: this.config.username,
             password: this.config.accessKey,
           },
-          headers: { 'Content-Type': 'multipart/form-data' },
+          headers: formData.getHeaders(),
           timeout: this.config.timeout * 5, // uploads can be slow
+          maxBodyLength: Infinity,
+          maxContentLength: Infinity,
         });
 
         const result: UploadResult = {

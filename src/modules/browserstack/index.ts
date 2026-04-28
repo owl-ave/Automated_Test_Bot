@@ -1,11 +1,20 @@
 import { PipelineContext, ModuleResult, TestResult } from '../../types';
 import { TestExecutor } from './executor';
 import { getDevicesForPlatform, getMinimalDeviceSet } from './device-matrix';
+import { LocatorCache } from '../knowledge-base/locator-cache';
 import { Logger } from '../../utils/logger';
 
 const logger = new Logger('BrowserStack');
 
 export async function runBrowserStack(context: PipelineContext): Promise<ModuleResult> {
+  // The locator cache is declared outside the main try so the finally block can close
+  // its pg pool no matter which path returns.
+  const databaseUrl = process.env.DATABASE_URL;
+  const cache: LocatorCache | undefined = databaseUrl ? new LocatorCache(databaseUrl) : undefined;
+  // App URL changes whenever the app is rebuilt — using it as the cache version key
+  // gives us automatic invalidation per build without needing a separate version tag.
+  const appVersion = context.appBuild?.androidAppUrl || context.appBuild?.iosAppUrl;
+
   try {
     let scenarios = context.scenariosBdd;
 
@@ -65,7 +74,7 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
     const androidDevices = devices.filter((d) => d.platform === 'Android');
     if (androidAppUrl && androidDevices.length > 0) {
       logger.log('Running Android tests', { devices: androidDevices.length, scenarios: scenarios.length });
-      const androidResults = await executor.executeTests(androidAppUrl, scenarios, androidDevices);
+      const androidResults = await executor.executeTests(androidAppUrl, scenarios, androidDevices, { cache, appVersion });
       allResults.push(...androidResults);
     }
 
@@ -81,7 +90,7 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
     });
     if (iosAppUrl && iosDevices.length > 0) {
       logger.log('Running iOS tests', { devices: iosDevices.length, scenarios: scenarios.length });
-      const iosResults = await executor.executeTests(iosAppUrl, scenarios, iosDevices);
+      const iosResults = await executor.executeTests(iosAppUrl, scenarios, iosDevices, { cache, appVersion });
       allResults.push(...iosResults);
     }
 
@@ -120,5 +129,9 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
   } catch (error) {
     logger.error('BrowserStack module failed', error);
     return { moduleName: 'BrowserStack', status: 'error', error: String(error) };
+  } finally {
+    if (cache) {
+      await cache.close().catch((err) => logger.debug('Cache close failed (non-fatal)', { error: String(err) }));
+    }
   }
 }

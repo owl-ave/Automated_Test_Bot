@@ -70,14 +70,14 @@ Respond ONLY with a JSON array, no explanation:
   }
 
   private parseAiResponse(response: string, allScreens: Screen[]): Flow[] {
-    const cleaned = response
-      .replace(/```json\n?/gi, '')
-      .replace(/```\n?/g, '')
-      .trim();
+    // Lazy require to avoid circular imports if this module is imported early.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { safeJsonParse } = require('../../ai/parse-json') as typeof import('../../ai/parse-json');
+    const json = safeJsonParse<AiFlow[]>(response);
 
-    const json: AiFlow[] = JSON.parse(cleaned);
-
-    if (!Array.isArray(json)) throw new Error('AI response is not an array');
+    if (!Array.isArray(json)) {
+      throw new Error('AI response is not a JSON array');
+    }
 
     const validScreenNames = new Set(allScreens.map((s) => s.name));
 

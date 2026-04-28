@@ -1,26 +1,42 @@
-function getElementIdGuidance(framework?: string): string {
+function getElementTargetGuidance(framework?: string): string {
+  // The runtime ElementResolver fuzzy-matches step targets against the live page source
+  // (text/label/contentDesc/name attrs). It does NOT require accessibility IDs — visible
+  // labels work fine. So we instruct the model to prefer human-readable labels and only
+  // fall back to IDs when an element has no visible text.
+  const common =
+    '- PREFER the element\'s visible label (button text, field placeholder, screen heading) over an internal id.\n' +
+    '- Quote the label exactly as it appears to the user — case and spacing are preserved by the resolver.\n' +
+    '- Use accessibility IDs ONLY if the element has no visible text (icon-only buttons, etc.).\n' +
+    '- Do NOT invent ids that aren\'t in the listed elements — fall back to the visible label instead.';
   switch (framework) {
     case 'react-native':
-      return '- Use testID prop values (e.g., testID="login_button") or component text content';
+      return `${common}\n- For React Native: testID values are valid fallbacks.`;
     case 'swift':
-      return '- Use accessibilityIdentifier values (preferred), accessibilityLabel, or visible text\n- For SwiftUI views: use .accessibilityIdentifier("id") values';
+      return `${common}\n- For SwiftUI/UIKit: accessibilityIdentifier and accessibilityLabel are valid fallbacks.`;
     case 'kotlin':
-      return '- Use android:id resource-id values (e.g., "login_button"), android:contentDescription, or visible text\n- For Jetpack Compose: use Modifier.testTag("tag") values';
+      return `${common}\n- For Android / Jetpack Compose: resource-id, contentDescription, and Modifier.testTag values are valid fallbacks.`;
     case 'flutter':
-      return '- Use Key values (e.g., Key("login_button")), Semantics labels, or visible text content';
+      return `${common}\n- For Flutter: Semantics labels and Key values are valid fallbacks.`;
     default:
-      return '- Use accessibility IDs, resource-ids, or visible text from the actual code';
+      return common;
   }
 }
 
 export function getFeatureGenerationPrompt(industry: string, flowName: string, screenNames: string[], framework?: string, screens?: { name: string; elements: { id: string; type: string; text?: string }[] }[]): string {
   const platformLabel = framework && framework !== 'native' ? ` (${framework})` : '';
 
-  // Build screen context with actual element IDs extracted from code
+  // Build screen context with extracted elements. We surface visible text as the primary
+  // identifier when present so the model picks human-readable labels for step targets.
   const screenContext = screenNames.map((name) => {
     const screen = screens?.find((s) => s.name === name);
-    if (!screen || screen.elements.length === 0) return `- ${name} (no elements extracted)`;
-    const elemList = screen.elements.slice(0, 15).map((e) => `    • "${e.id}" (${e.type}${e.text ? `, text: "${e.text}"` : ''})`).join('\n');
+    if (!screen || screen.elements.length === 0) {
+      return `- ${name} (no elements extracted — generate steps using likely visible labels for a ${industry} app on this screen)`;
+    }
+    const elemList = screen.elements.slice(0, 15).map((e) => {
+      const display = e.text ?? e.id;
+      const fallbackId = e.text && e.text !== e.id ? `, fallback id: "${e.id}"` : '';
+      return `    • "${display}" (${e.type}${fallbackId})`;
+    }).join('\n');
     return `- ${name}:\n${elemList}`;
   }).join('\n');
 
@@ -30,7 +46,7 @@ You are writing test scenarios for a ${industry}${platformLabel} mobile app.
 Flow: ${flowName}
 Screens Involved: ${screenNames.join(' → ')}
 
-## Actual UI Elements Found in Code (use THESE exact IDs — do not invent new ones)
+## UI elements available on each screen
 ${screenContext}
 
 ## Output Requirements
@@ -41,33 +57,33 @@ Generate realistic scenarios using strict Appium Gherkin mapping:
 
 ## Appium Gherkin Syntax Rules
 You MUST strictly follow these step formats so the Appium parser can execute them.
-- TAP: \`When user taps on "<elementId>"\`
-- TYPE: \`And user types "<value>" in "<elementId>"\`
+- TAP: \`When user taps on "<element>"\`
+- TYPE: \`And user types "<value>" in "<element>"\`
 - SCROLL: \`And user scrolls <up/down>\`
 - SWIPE: \`And user swipes <left/right>\`
-- WAIT: \`And user waits for "<elementId>"\`
-- ASSERT VISIBLE: \`Then user should see "<elementId>"\`
+- WAIT: \`And user waits for "<element>"\`
+- ASSERT VISIBLE: \`Then user should see "<element>"\`
 - ASSERT TEXT: \`Then text shows "<expectedText>"\`
 - BACK: \`And user goes back\`
 
-## Element ID Rules
-${getElementIdGuidance(framework)}
+## Element Target Rules
+${getElementTargetGuidance(framework)}
 
-## Multi-Shot Example
+## Multi-Shot Example (visible-label style)
 Scenario: Happy Path Login
   Given the app is launched
-  And user is on "login_screen"
-  When user types "test@example.com" in "email_input"
-  And user types "<test_password>" in "password_input"
-  And user taps on "submit_button"
-  And user waits for "home_dashboard"
-  Then user should see "home_dashboard"
+  And user is on "Login"
+  When user types "test@example.com" in "Email"
+  And user types "<test_password>" in "Password"
+  And user taps on "Sign in"
+  And user waits for "Home"
+  Then user should see "Home"
 
 Scenario: Invalid Email format
   Given the app is launched
-  And user is on "login_screen"
-  When user types "not-an-email" in "email_input"
-  And user taps on "submit_button"
+  And user is on "Login"
+  When user types "not-an-email" in "Email"
+  And user taps on "Sign in"
   Then text shows "Invalid email format"
 
 Analyze the flow and generate optimal scenarios.

@@ -97,7 +97,7 @@ export async function runKnowledgeBase(context: PipelineContext): Promise<Module
     const failures = testResults.filter((r) => r.status === 'fail' && r.error);
     for (const failure of failures) {
       try {
-        const embedding = vectorSearch.generateEmbedding(`${failure.scenario} ${failure.error}`);
+        const embedding = await vectorSearch.generateEmbedding(`${failure.scenario} ${failure.error}`);
         await vectorSearch.indexFailure({
           scenario: failure.scenario,
           error: failure.error!,

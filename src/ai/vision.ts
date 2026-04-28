@@ -1,5 +1,14 @@
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../utils/logger';
+
+// IMPORTANT: This project uses ONLY the Claude Agent SDK (@anthropic-ai/claude-agent-sdk).
+// The Agent SDK does NOT accept image inputs — it is text-only. We intentionally do NOT
+// depend on @anthropic-ai/sdk (Messages API) here.
+//
+// As a result, the "vision" methods below cannot perform real image analysis. Instead of
+// faking a pass (which hid real failures in the old code), each method now returns an
+// explicit "skipped" / "unsupported" shape and logs clearly. Callers should treat the
+// result as "visual validation unavailable" and fall back to screenshot links in the PR
+// comment + BrowserStack session recording for manual review.
 
 export interface VisionAnalysisResult {
   description: string;
@@ -16,87 +25,57 @@ export interface DetectedElement {
 
 const logger = new Logger('VisionAnalyzer');
 
-async function runQuery(prompt: string): Promise<string> {
-  let result = '';
-  try {
-    for await (const message of query({
-      prompt,
-      options: { maxTurns: 1, model: 'claude-sonnet-4-6' },
-    })) {
-      if ('result' in message) result = message.result;
-    }
-  } catch (error: any) {
-    logger.error('Vision query failed', { message: error.message });
-    throw error;
-  }
-  return result;
-}
-
-function parseJSON(text: string): unknown {
-  return JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim());
-}
-
 export class VisionAnalyzer {
-  // Note: Agent SDK is text-only — actual image bytes cannot be sent.
-  // Screenshot analysis runs as text-based AI reasoning on screen context.
+  private warned = false;
 
-  async analyzeScreenshot(imageBase64: string, question: string): Promise<string> {
-    try {
-      // Agent SDK doesn't support image uploads — analyze by context only
-      const response = await runQuery(
-        `You are a mobile QA engineer analyzing a screenshot result. Based on the test context, answer the following:\n\n${question}\n\nProvide a reasonable assessment based on typical mobile app behavior.`,
-      );
-      logger.log('Screenshot analysis complete (text-mode)', { responseLength: response.length });
-      return response;
-    } catch (error) {
-      logger.error('Screenshot analysis failed', error);
-      throw error;
-    }
+  private warnOnce(): void {
+    if (this.warned) return;
+    this.warned = true;
+    logger.warn(
+      'Vision analysis is unavailable: Claude Agent SDK is text-only. Visual checks will be ' +
+        'skipped and the PR comment will include a link to the BrowserStack session for manual review.',
+    );
   }
 
-  async detectElements(imageBase64: string): Promise<DetectedElement[]> {
-    // Cannot detect elements without actual image — return empty
-    logger.warn('Element detection skipped: Agent SDK does not support image input');
+  // Returns an empty string rather than a fabricated description. Callers should
+  // check for truthiness before including this in any report.
+  async analyzeScreenshot(_imageBase64: string, _question: string): Promise<string> {
+    this.warnOnce();
+    return '';
+  }
+
+  // Returns an empty array — we cannot enumerate UI elements from pixels via the Agent SDK.
+  async detectElements(_imageBase64: string): Promise<DetectedElement[]> {
+    this.warnOnce();
     return [];
   }
 
+  // Returns a neutral "skipped" shape so downstream code does NOT treat a missing
+  // visual diff as a pass. `match: false` + `confidence: 0` signals to the validator
+  // that this check didn't run, and it should not count toward a green build.
   async compareScreenshots(
-    baselineBase64: string,
-    currentBase64: string,
-    context: string,
+    _baselineBase64: string,
+    _currentBase64: string,
+    _context: string,
   ): Promise<{ match: boolean; differences: string[]; confidence: number }> {
-    try {
-      const response = await runQuery(
-        `You are a visual regression tool. Context: ${context}. The test ran and a screenshot was captured. Without image data, assume no visual regressions unless there are known errors. Respond with JSON only:\n{"match": true, "differences": [], "confidence": 50}`,
-      );
-      const result = parseJSON(response) as { match?: boolean; differences?: string[]; confidence?: number };
-      return {
-        match: result.match ?? true,
-        differences: result.differences ?? [],
-        confidence: result.confidence ?? 50,
-      };
-    } catch {
-      return { match: true, differences: [], confidence: 0 };
-    }
+    this.warnOnce();
+    return {
+      match: false,
+      differences: ['vision-unsupported: Agent SDK is text-only, screenshot comparison skipped'],
+      confidence: 0,
+    };
   }
 
   async validateScreenState(
-    imageBase64: string,
-    expectedState: string,
-    platform: 'android' | 'ios',
+    _imageBase64: string,
+    _expectedState: string,
+    _platform: 'android' | 'ios',
   ): Promise<{ valid: boolean; confidence: number; issues: string[] }> {
-    try {
-      const response = await runQuery(
-        `A ${platform} mobile app test just completed. Expected screen state: "${expectedState}". Assuming the test steps passed without errors, assess if this state is likely valid. Respond with JSON only:\n{"valid": true, "confidence": 60, "issues": []}`,
-      );
-      const parsed = parseJSON(response) as { valid?: boolean; confidence?: number; issues?: string[] };
-      return {
-        valid: parsed.valid ?? true,
-        confidence: parsed.confidence ?? 60,
-        issues: parsed.issues ?? [],
-      };
-    } catch {
-      return { valid: true, confidence: 0, issues: [] };
-    }
+    this.warnOnce();
+    return {
+      valid: false,
+      confidence: 0,
+      issues: ['vision-unsupported: Agent SDK is text-only, screen state validation skipped'],
+    };
   }
 }

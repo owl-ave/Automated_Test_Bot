@@ -41,13 +41,22 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
           : `https://github.com/${repoSlug}.git`;
 
         const branchFlag = context.branch ? `-b ${context.branch}` : '';
-        execSync(`git clone --depth 50 ${branchFlag} ${cloneUrl} "${cloneDir}"`, { stdio: 'pipe' });
-        logger.log('Repo cloned', { path: cloneDir, branch: context.branch });
+        try {
+          execSync(`git clone --depth 50 ${branchFlag} ${cloneUrl} "${cloneDir}"`, { stdio: 'pipe' });
+          logger.log('Repo cloned', { path: cloneDir, branch: context.branch });
+        } catch (err) {
+          const scrubbed = scrubToken(err, token);
+          throw new Error(`git clone failed: ${scrubbed}`);
+        }
       } else {
         logger.log('Using cached repo clone', { path: cloneDir });
         try {
           execSync('git pull --ff-only', { cwd: cloneDir, stdio: 'pipe' });
-        } catch { /* ignore */ }
+        } catch (err) {
+          logger.debug('git pull --ff-only failed (continuing with cached clone)', {
+            error: String(err).slice(0, 200),
+          });
+        }
       }
 
       repoPath = cloneDir;
@@ -125,4 +134,13 @@ export async function runCodeReader(context: PipelineContext): Promise<ModuleRes
     logger.error('Code reading failed', error);
     return { moduleName: 'CodeReader', status: 'error', error: String(error) };
   }
+}
+
+function scrubToken(err: unknown, token: string): string {
+  let msg = err instanceof Error ? err.message : String(err);
+  if (token && msg.includes(token)) msg = msg.split(token).join('***');
+  // Also catch the `x-access-token:<anything>@github.com` form to cover any unknown token that
+  // got interpolated via URL.
+  msg = msg.replace(/x-access-token:[^@\s]+@/g, 'x-access-token:***@');
+  return msg.slice(0, 500);
 }

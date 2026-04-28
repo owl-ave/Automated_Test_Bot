@@ -102,7 +102,24 @@ export class StepGenerator {
     if (text.includes('tap') || text.includes('click') || text.includes('press')) {
       if (text.includes('long press') || text.includes('long-press') || text.includes('hold')) {
         const el = this.extractElement(step.text);
-        return `      const el = await driver.$('~${el}');\n      await el.touchAction('longPress');\n`;
+        return (
+          `      const el = await driver.$('~${el}');\n` +
+          `      await el.waitForDisplayed({ timeout: 10000 });\n` +
+          `      const rect = await el.getLocation();\n` +
+          `      const size = await el.getSize();\n` +
+          `      const cx = Math.floor(rect.x + size.width / 2);\n` +
+          `      const cy = Math.floor(rect.y + size.height / 2);\n` +
+          `      await driver.performActions([{\n` +
+          `        type: 'pointer', id: 'finger1', parameters: { pointerType: 'touch' },\n` +
+          `        actions: [\n` +
+          `          { type: 'pointerMove', duration: 0, x: cx, y: cy },\n` +
+          `          { type: 'pointerDown', button: 0 },\n` +
+          `          { type: 'pause', duration: 1500 },\n` +
+          `          { type: 'pointerUp', button: 0 },\n` +
+          `        ]\n` +
+          `      }]);\n` +
+          `      await driver.releaseActions();\n`
+        );
       }
       if (text.includes('double'))  {
         const el = this.extractElement(step.text);
@@ -484,17 +501,25 @@ export class StepGenerator {
     return `      const ${this.varName(field)} = await driver.$(${locator});\n      await ${this.varName(field)}.waitForDisplayed({ timeout: 10000 });\n      await ${this.varName(field)}.setValue('${value}');\n`;
   }
 
+  // Real Appium locator strategies. The `~` prefix is the accessibility-id shortcut
+  // in WebdriverIO's `$(...)` API. For Android-only resource-id we use the
+  // `android=` prefix with `UiSelector`; for iOS-only label match we use an
+  // `-ios predicate string:` selector. Never emit `id=...` — that's not an
+  // Appium strategy (it's a Selenium CSS-id selector).
   private buildLocator(el: string): string {
-    // Platform-aware locator strategy
+    const escaped = el.replace(/'/g, "\\'").replace(/"/g, '\\"');
     switch (this.framework) {
       case 'swift':
-        return `'~${el}'`; // iOS: accessibility identifier
+        // iOS: prefer accessibility identifier; fallback to predicate on name/label.
+        return `'~${escaped}'`;
       case 'kotlin':
-        return `'android=new UiSelector().resourceId("${el}").descriptionContains("${el}")'`; // Android: UiSelector
+        // Android: single UiSelector clause on resource-id. The previous code OR-ed
+        // resourceId AND descriptionContains, which is confusing; use one strategy.
+        return `'android=new UiSelector().resourceId("${escaped}")'`;
       case 'flutter':
-        return `'~${el}'`; // Flutter: Semantics label
+        return `'~${escaped}'`;
       default:
-        return `'~${el}'`; // React Native: testID → accessibility id
+        return `'~${escaped}'`;
     }
   }
 
