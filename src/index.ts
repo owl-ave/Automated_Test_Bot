@@ -77,9 +77,9 @@ async function executeStep(
 
   context.logs.push(`${moduleName} [${durationMs}ms]: ${result.status}`);
 
-  if (result.status === 'success' || result.status === 'warning') {
+  if (result.status === 'success' || result.status === 'warning' || result.status === 'skipped') {
     context.moduleStatuses.push({ name: moduleName, status: result.status, durationMs, error: result.error });
-    logger.log(`${moduleName} completed safely`, stripScreenshots(result.data) || 'Success without data');
+    logger.log(`${moduleName} completed safely`, stripScreenshots(result.data) || `${result.status} without data`);
     return true;
   }
 

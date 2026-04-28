@@ -86,6 +86,15 @@ export async function runPerformance(context: PipelineContext): Promise<ModuleRe
 
     logger.log('Performance module completed', { metricCount: metrics.length });
 
+    if (metrics.length === 0) {
+      return {
+        moduleName: 'performance',
+        status: 'skipped',
+        error: 'no driver and no app build — nothing to measure',
+        data: { metrics, regressions },
+      };
+    }
+
     return {
       moduleName: 'performance',
       status: regressions.some((r: any) => r.severity === 'high') ? 'warning' : 'success',

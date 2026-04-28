@@ -76,6 +76,9 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
 
     logger.log('Building from mobile path', { buildPath, framework, android: shouldBuildAndroid, ios: shouldBuildIos });
 
+    // Capture per-platform errors so we can surface the real reason when both fail.
+    const platformErrors: Record<'android' | 'ios', string | undefined> = { android: undefined, ios: undefined };
+
     // Build Android — G1: pass context framework to builder
     if (shouldBuildAndroid) {
       try {
@@ -91,8 +94,10 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
         buildResult.androidCustomId = androidCustomId;
         logger.log('Android app uploaded', { app_url: androidUpload.app_url });
       } catch (error) {
+        const msg = (error as Error)?.message || String(error);
+        platformErrors.android = msg;
         logger.warn('Android build failed, continuing with iOS', error);
-        context.logs.push(`AppBuilder - Android: ${String(error)}`);
+        context.logs.push(`AppBuilder - Android: ${msg}`);
       }
     } else {
       logger.log('Skipping Android build — Swift/iOS-only project detected');
@@ -113,8 +118,10 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
         buildResult.iosCustomId = iosCustomId;
         logger.log('iOS app uploaded', { app_url: iosUpload.app_url });
       } catch (error) {
+        const msg = (error as Error)?.message || String(error);
+        platformErrors.ios = msg;
         logger.warn('iOS build failed, continuing', error);
-        context.logs.push(`AppBuilder - iOS: ${String(error)}`);
+        context.logs.push(`AppBuilder - iOS: ${msg}`);
       }
     } else {
       logger.log('Skipping iOS build — Kotlin/Android-only project detected');
@@ -131,7 +138,12 @@ export async function runAppBuilder(context: PipelineContext): Promise<ModuleRes
       if (buildResult.iosAppUrl) succeeded.push('ios');
     }
     if (attempted.length > 0 && succeeded.length === 0) {
-      throw new Error(`App build failed (attempted: ${attempted.join(', ')})`);
+      // Surface the underlying platform error(s) instead of a generic "App build failed".
+      const parts: string[] = [];
+      if (platformErrors.android) parts.push(`Android: ${platformErrors.android}`);
+      if (platformErrors.ios) parts.push(`iOS: ${platformErrors.ios}`);
+      const detail = parts.length > 0 ? `\n${parts.join('\n\n')}` : '';
+      throw new Error(`App build failed (attempted: ${attempted.join(', ')})${detail}`);
     }
 
     context.appBuild = buildResult;

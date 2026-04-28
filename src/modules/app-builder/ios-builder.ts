@@ -73,17 +73,25 @@ export class IosBuilder {
       if (!workspaceFile) throw new Error('iOS workspace or project not found');
 
       const isWorkspace = workspaceFile.endsWith('.xcworkspace');
-      const workspaceArg = isWorkspace ? `-workspace ${workspaceFile}` : `-project ${workspaceFile}`;
-      const schemeName = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
+      const workspaceArg = isWorkspace ? `-workspace "${workspaceFile}"` : `-project "${workspaceFile}"`;
+      const guessedScheme = path.basename(workspaceFile, isWorkspace ? '.xcworkspace' : '.xcodeproj');
+
+      // Resolve SPM packages (Firebase / FBLPromises / etc.) before listing schemes —
+      // a cold SPM fetch can exceed 30s and would make -list time out.
+      const spmCacheDir = path.join(iosDir, 'build', 'SourcePackages');
+      this.resolveSpm(workspaceArg, iosDir, spmCacheDir);
+
+      const resolvedScheme = this.resolveSchemeName(workspaceArg, iosDir, guessedScheme);
 
       const derivedDataPath = path.join(this.rootPath, 'build', 'DerivedData');
-      execSync(
-        `xcodebuild ${workspaceArg} -scheme "${schemeName}" ` +
+      this.exec(
+        `xcodebuild ${workspaceArg} -scheme "${resolvedScheme}" ` +
         `-configuration Debug -derivedDataPath "${derivedDataPath}" ` +
         `-destination "generic/platform=iOS" ` +
         `CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO ` +
         `build`,
-        { cwd: this.rootPath, stdio: 'inherit', timeout: 600000 },
+        this.rootPath,
+        600000,
       );
 
       const appPath = this.findApp(derivedDataPath);
@@ -173,26 +181,7 @@ export class IosBuilder {
       const spmCacheDir = path.join(projectDir, 'build', 'SourcePackages');
       this.resolveSpm(workspaceArg, projectDir, spmCacheDir);
 
-      // List available schemes (now fast — packages already resolved)
-      let resolvedScheme = schemeName;
-      try {
-        const schemesOutput = execSync(
-          `xcodebuild ${workspaceArg} -list -json`,
-          { cwd: projectDir, encoding: 'utf-8', timeout: 60000 },
-        );
-        const info = JSON.parse(schemesOutput);
-        const schemes: string[] = info.workspace?.schemes ?? info.project?.schemes ?? [];
-        this.logger.log('Available schemes', { schemes });
-        if (schemes.length && !schemes.includes(schemeName)) {
-          resolvedScheme = schemes[0];
-          this.logger.log(`Scheme "${schemeName}" not found, using "${resolvedScheme}"`);
-        }
-      } catch (e: any) {
-        this.logger.error('Could not list schemes, falling back to guessed name', {
-          guessed: schemeName,
-          message: e?.message || String(e),
-        });
-      }
+      const resolvedScheme = this.resolveSchemeName(workspaceArg, projectDir, schemeName);
 
       const derivedDataPath = path.join(projectDir, 'build', 'DerivedData');
       this.logger.log('Starting xcodebuild', { scheme: resolvedScheme, derivedDataPath });
@@ -271,7 +260,9 @@ export class IosBuilder {
     if (result.stderr) process.stderr.write(result.stderr);
 
     if (result.error || result.status !== 0) {
-      const tail = (s: string) => (s || '').slice(-4000);
+      // 16KB tail: xcodebuild/SPM error chains often span >4KB and the root cause
+      // line scrolls past a smaller window before reaching the final linker error.
+      const tail = (s: string) => (s || '').slice(-16000);
       const stderr = tail(result.stderr || '');
       const stdout = tail(result.stdout || '');
       const errMsg = result.error?.message || `exit ${result.status}`;
@@ -284,9 +275,37 @@ export class IosBuilder {
       });
       throw new Error(
         `Command failed (${errMsg}): ${cmd.slice(0, 200)}\n` +
-        `--- stderr (last 4KB) ---\n${stderr || '(empty)'}\n` +
-        `--- stdout (last 4KB) ---\n${stdout || '(empty)'}`,
+        `--- stderr (last 16KB) ---\n${stderr || '(empty)'}\n` +
+        `--- stdout (last 16KB) ---\n${stdout || '(empty)'}`,
       );
+    }
+  }
+
+  /**
+   * Run `xcodebuild -list -json` to discover available schemes; fall back to the first
+   * one if the guessed name is missing. Prevents xcodebuild from hanging on a non-existent
+   * scheme when the workspace name doesn't match the scheme name (common in RN/CocoaPods).
+   */
+  private resolveSchemeName(workspaceArg: string, cwd: string, guessed: string): string {
+    try {
+      const out = execSync(`xcodebuild ${workspaceArg} -list -json`, {
+        cwd,
+        encoding: 'utf-8',
+        timeout: 60000,
+      });
+      const info = JSON.parse(out);
+      const schemes: string[] = info.workspace?.schemes ?? info.project?.schemes ?? [];
+      this.logger.log('Available schemes', { schemes, guessed });
+      if (schemes.length === 0) return guessed;
+      if (schemes.includes(guessed)) return guessed;
+      this.logger.log(`Scheme "${guessed}" not found, using "${schemes[0]}"`);
+      return schemes[0];
+    } catch (e: any) {
+      this.logger.warn('Could not list schemes, falling back to guessed name', {
+        guessed,
+        message: e?.message || String(e),
+      });
+      return guessed;
     }
   }
 

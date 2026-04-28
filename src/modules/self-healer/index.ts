@@ -112,9 +112,19 @@ export async function runSelfHealer(context: PipelineContext): Promise<ModuleRes
     const didWork = summary.locatorsHealed > 0 || summary.flowsAdapted > 0 || summary.featuresUpdated > 0;
     const hadTestResults = testResults && testResults.length > 0;
 
+    let status: 'success' | 'warning' | 'skipped';
+    if (didWork) {
+      status = 'success';
+    } else if (hadTestResults) {
+      status = 'warning';
+    } else {
+      status = 'skipped';
+    }
+
     return {
       moduleName: 'SelfHealer',
-      status: didWork ? 'success' : hadTestResults ? 'warning' : 'success',
+      status,
+      error: status === 'skipped' ? 'nothing to heal — no failing tests and no diff-driven feature updates' : undefined,
       data: summary,
     };
   } catch (error) {

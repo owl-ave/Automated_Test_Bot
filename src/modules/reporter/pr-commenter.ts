@@ -147,9 +147,18 @@ export class PrCommenter {
       }
     };
 
+    // Pull a short single-line summary out of an error string for the table cell;
+    // pipes/newlines break Markdown tables, and a 16KB stderr tail destroys layout.
+    const CELL_LIMIT = 200;
+    const summarize = (msg: string): string => {
+      const firstLine = msg.split('\n').find((l) => l.trim().length > 0) || msg;
+      const cleaned = firstLine.replace(/\|/g, '\\|').trim();
+      return cleaned.length > CELL_LIMIT ? `${cleaned.slice(0, CELL_LIMIT - 1)}…` : cleaned;
+    };
+
     const rows = statuses.map((m) => {
       const duration = m.durationMs > 0 ? `${(m.durationMs / 1000).toFixed(1)}s` : '-';
-      const reason = m.error ? m.error : '';
+      const reason = m.error ? summarize(m.error) : '';
       return `| ${statusIcon(m.status)} | ${m.name} | ${m.status.toUpperCase()} | ${duration} | ${reason} |`;
     }).join('\n');
 
@@ -158,6 +167,22 @@ export class PrCommenter {
       '|---|--------|--------|----------|---------|',
       rows,
     ];
+
+    // Append a collapsible block per failed module with the full multi-line error
+    // (xcodebuild/SPM stderr tails routinely span thousands of bytes).
+    const failedWithDetail = statuses.filter(
+      (m) => m.status === 'error' && m.error && (m.error.includes('\n') || m.error.length > CELL_LIMIT),
+    );
+    for (const m of failedWithDetail) {
+      lines.push('');
+      lines.push(`<details>`);
+      lines.push(`<summary>Full error from <strong>${m.name}</strong></summary>`);
+      lines.push('');
+      lines.push('```');
+      lines.push(m.error!);
+      lines.push('```');
+      lines.push('</details>');
+    }
 
     // Add a warning banner if critical modules failed/skipped
     const skippedOrFailed = statuses.filter((m) => m.status === 'error' || m.status === 'skipped');

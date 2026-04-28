@@ -37,9 +37,9 @@ export async function runAccessibility(context: PipelineContext): Promise<Module
       logger.warn('No app builds available for accessibility testing');
       return {
         moduleName: 'accessibility',
-        status: 'warning',
+        status: 'skipped',
         data: { issues: [], fixes: [], summary: emptySummary() },
-        error: 'No app builds available',
+        error: 'no app build — accessibility runtime checks need an installed app',
       };
     }
 

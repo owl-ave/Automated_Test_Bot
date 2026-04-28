@@ -57,9 +57,9 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
       logger.warn('No screens identified for visual regression testing');
       return {
         moduleName: 'visual-regression',
-        status: 'warning',
+        status: 'skipped',
         data: emptyResult(),
-        error: 'No screens to test',
+        error: 'no screens identified — nothing to compare visually',
       };
     }
 
@@ -75,13 +75,13 @@ export async function runVisualRegression(context: PipelineContext): Promise<Mod
       logger.warn('No drivers available — visual screenshots require real device sessions (BrowserStack)');
       return {
         moduleName: 'visual-regression',
-        status: 'warning',
+        status: 'skipped',
         data: {
           ...emptyResult(),
           pendingScreens: screenNames,
           note: `${screenNames.length} screen(s) identified but could not be tested — no real device sessions available`,
         },
-        error: 'No drivers available',
+        error: 'no app build — Percy needs a running BrowserStack session to capture screenshots',
       };
     }
 

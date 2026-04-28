@@ -112,7 +112,7 @@ export interface TestResult {
 
 export interface ModuleResult {
   moduleName: string;
-  status: 'success' | 'error' | 'warning';
+  status: 'success' | 'error' | 'warning' | 'skipped';
   data?: unknown;
   error?: string;
 }

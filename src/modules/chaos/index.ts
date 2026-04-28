@@ -45,7 +45,7 @@ export async function runChaos(context: PipelineContext): Promise<ModuleResult> 
       const screens = context.codeAnalysis?.screens?.map((s) => s.name) ?? [];
       return {
         moduleName: 'chaos',
-        status: 'warning',
+        status: 'skipped',
         data: {
           ...emptyResult(),
           pendingTests: ['offline-behavior', 'reconnection', 'slow-network', 'incoming-call',
@@ -53,7 +53,7 @@ export async function runChaos(context: PipelineContext): Promise<ModuleResult> 
           pendingScreens: screens,
           note: 'Chaos tests identified but could not run — no real device sessions available',
         },
-        error: 'No drivers available',
+        error: 'no app build — chaos tests need a running BrowserStack session',
       };
     }
 

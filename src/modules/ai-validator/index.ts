@@ -24,7 +24,7 @@ interface ValidationSummary {
 async function runStaticScenarioValidation(context: PipelineContext): Promise<ModuleResult> {
   const scenarios = context.scenariosBdd ?? [];
   if (scenarios.length === 0) {
-    return { moduleName: 'AiValidator', status: 'warning', error: 'No test results and no scenarios to validate' };
+    return { moduleName: 'AiValidator', status: 'skipped', error: 'no test results and no scenarios to validate' };
   }
 
   logger.log('No test results — running static BDD scenario quality check', { scenarios: scenarios.length });
