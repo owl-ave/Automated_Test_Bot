@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { execSync, spawnSync } from 'child_process';
 import { Logger } from '../../utils/logger';
@@ -170,15 +171,7 @@ export class IosBuilder {
       // Resolve Swift Package Manager dependencies FIRST — Firebase/Sentry/Privy are heavy
       // and a cold fetch can exceed 30s. Doing this before -list keeps the list call fast.
       const spmCacheDir = path.join(projectDir, 'build', 'SourcePackages');
-      try {
-        this.exec(
-          `xcodebuild ${workspaceArg} -resolvePackageDependencies -clonedSourcePackagesDirPath "${spmCacheDir}"`,
-          projectDir,
-          300000,
-        );
-      } catch (e: any) {
-        this.logger.warn('SPM resolve failed — continuing (may not use SPM)', { message: e?.message });
-      }
+      this.resolveSpm(workspaceArg, projectDir, spmCacheDir);
 
       // List available schemes (now fast — packages already resolved)
       let resolvedScheme = schemeName;
@@ -236,6 +229,32 @@ export class IosBuilder {
     if (!fs.existsSync(ipaPath)) throw new Error('IPA packaging failed');
     this.logger.log('IPA packaged', { ipaPath });
     return ipaPath;
+  }
+
+  /**
+   * Resolve SPM packages with self-healing for poisoned global artifact cache.
+   * If SPM has a partial xcframework download in ~/Library/Caches/org.swift.swiftpm/artifacts/,
+   * it refuses to re-download with "already exists in file system". Prune and retry once.
+   */
+  private resolveSpm(workspaceArg: string, projectDir: string, spmCacheDir: string): void {
+    const cmd = `xcodebuild ${workspaceArg} -resolvePackageDependencies -clonedSourcePackagesDirPath "${spmCacheDir}"`;
+    try {
+      this.exec(cmd, projectDir, 300000);
+      return;
+    } catch (e: any) {
+      const msg = String(e?.message || '');
+      const match = msg.match(/required by binary target '[^']+': (\S+) already exists in file system/);
+      const artifactsDir = path.join(os.homedir(), 'Library', 'Caches', 'org.swift.swiftpm', 'artifacts');
+      if (match) {
+        const stale = match[1];
+        this.logger.warn('Pruning stale SPM artifact and retrying', { stale });
+        try { fs.rmSync(stale, { recursive: true, force: true }); } catch { /* ignore */ }
+      } else {
+        this.logger.warn('SPM resolve failed — pruning artifacts cache and retrying', { artifactsDir });
+        try { fs.rmSync(artifactsDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
+      this.exec(cmd, projectDir, 300000);
+    }
   }
 
   /** Run a command with output streamed AND captured, so failures surface in the bot's log */

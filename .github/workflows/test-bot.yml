@@ -186,8 +186,12 @@ jobs:
         if: needs.detect.outputs.needs_ios == 'true'
         uses: actions/cache@v4
         with:
+          # Cache only repositories/ (git mirrors — slow to refetch) and the local
+          # cloned source packages. Skip artifacts/ (binary xcframework downloads):
+          # a partial download there poisons the cache and breaks every subsequent
+          # run with "already exists in file system" until manually cleared.
           path: |
-            ~/Library/Caches/org.swift.swiftpm
+            ~/Library/Caches/org.swift.swiftpm/repositories
             target/ios/build/SourcePackages
             target/build/SourcePackages
           key: spm-${{ hashFiles('target/**/Package.resolved') }}
