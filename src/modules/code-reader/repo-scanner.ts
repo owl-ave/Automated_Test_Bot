@@ -260,23 +260,26 @@ export class RepoScanner {
     return screens;
   }
 
-  private extractSwiftElements(content: string): { id: string; type: string; text?: string }[] {
-    const elements: { id: string; type: string; text?: string }[] = [];
+  private extractSwiftElements(content: string): { id: string; type: string; text?: string; accessibilityId?: string }[] {
+    const elements: { id: string; type: string; text?: string; accessibilityId?: string }[] = [];
     const seen = new Set<string>();
 
-    const add = (id: string, type: string, text?: string) => {
+    const add = (id: string, type: string, text?: string, accessibilityId?: string) => {
       if (id && !seen.has(id)) {
         seen.add(id);
-        elements.push({ id, type, text });
+        elements.push({ id, type, text, accessibilityId });
       }
     };
 
-    // accessibilityIdentifier = "xxx"
-    for (const m of content.matchAll(/\.accessibilityIdentifier\s*=\s*["']([^"']+)["']/g)) add(m[1], 'element');
-    for (const m of content.matchAll(/accessibilityIdentifier:\s*["']([^"']+)["']/g)) add(m[1], 'element');
+    // accessibilityIdentifier = "xxx" — UIKit. The captured value is an
+    // authoritative, developer-set a11y ID. We mirror it into both `id` (for
+    // legacy lookups) and `accessibilityId` (for downstream code that needs to
+    // distinguish a real a11y ID from a synthetic slug derived from button text).
+    for (const m of content.matchAll(/\.accessibilityIdentifier\s*=\s*["']([^"']+)["']/g)) add(m[1], 'element', undefined, m[1]);
+    for (const m of content.matchAll(/accessibilityIdentifier:\s*["']([^"']+)["']/g)) add(m[1], 'element', undefined, m[1]);
 
     // .accessibilityIdentifier("xxx") — SwiftUI
-    for (const m of content.matchAll(/\.accessibilityIdentifier\s*\(\s*["']([^"']+)["']\s*\)/g)) add(m[1], 'element');
+    for (const m of content.matchAll(/\.accessibilityIdentifier\s*\(\s*["']([^"']+)["']\s*\)/g)) add(m[1], 'element', undefined, m[1]);
 
     // accessibilityLabel = "xxx"
     for (const m of content.matchAll(/\.accessibilityLabel\s*=\s*["']([^"']+)["']/g)) add(m[1], 'label');

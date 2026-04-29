@@ -9,13 +9,20 @@ const logger = new Logger('LaunchStateDetector');
 
 // Files we read to understand cold-launch routing. We pick the first 1-2 that
 // exist — most apps have a clear single entry point and we don't want to dump
-// the whole codebase into the prompt.
+// the whole codebase into the prompt. iOS patterns use `**` so deeper layouts
+// (e.g. `ios/app/App/NolaApp.swift`, `ios/Source/AppRouter.swift`) get picked
+// up — the previous `ios/*/App.swift` and `ios/*/*App.swift` only matched 2-3
+// segments and silently missed the routing file in Nola PR#8 (run from
+// 2026-04-29). Without an entry-point file the AI gets only a bare screen
+// list and routinely fails to detect language/onboarding gates.
 const ENTRY_POINT_HINTS = [
   // iOS / Swift
-  'ios/*/AppDelegate.swift',
-  'ios/*/SceneDelegate.swift',
-  'ios/*/App.swift',
-  'ios/*/*App.swift',
+  'ios/**/AppDelegate.swift',
+  'ios/**/SceneDelegate.swift',
+  'ios/**/AppRouter.swift',
+  'ios/**/Router.swift',
+  'ios/**/App.swift',
+  'ios/**/*App.swift',
   '*App.swift',
   // Android / Kotlin
   'android/app/src/main/java/**/MainActivity.kt',
@@ -315,9 +322,23 @@ export function parseAndValidateGates(raw: unknown, screens: Screen[]): PreAuthG
         dismiss = { type: 'tap', label: dismissRaw.label };
       }
     } else if (dismissRaw.type === 'tap-id' && typeof dismissRaw.id === 'string') {
-      const idMatches = screen.elements.some((e) => e.accessibilityId === dismissRaw.id || e.id === dismissRaw.id);
-      if (idMatches) {
+      // Only emit a real `tap-id` gate when the id matches an actual
+      // `.accessibilityIdentifier(...)` from the source. extractSwiftElements
+      // also stores text-derived synthetic ids (e.g. `Button("Continue")` →
+      // `id: "continue"`) in the same `id` field — those don't exist on the
+      // device. If the AI picked a synthetic id, demote the gate to a
+      // text-based `tap` using the element's visible text so Maestro can
+      // actually find it. This was the silent-failure mode in the iOS run
+      // from 2026-04-29: preamble emitted `tapOn: { id: "continue" }`, no
+      // such a11y id existed, the tap timed out, the flow never advanced.
+      const realA11y = screen.elements.find((e) => e.accessibilityId === dismissRaw.id);
+      if (realA11y) {
         dismiss = { type: 'tap-id', id: dismissRaw.id };
+      } else {
+        const synthetic = screen.elements.find((e) => e.id === dismissRaw.id && typeof e.text === 'string' && e.text);
+        if (synthetic) {
+          dismiss = { type: 'tap', label: synthetic.text! };
+        }
       }
     } else if (dismissRaw.type === 'system-permission') {
       dismiss = { type: 'system-permission', allow: dismissRaw.allow !== false };

@@ -1,4 +1,8 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { LaunchStateDetector, parseAndValidateGates } from '../src/modules/app-analyzer/launch-state';
+import { ClaudeClient } from '../src/ai/claude-client';
 import { Element, Screen } from '../src/types';
 
 function screen(name: string, elements: Element[] = []): Screen {
@@ -161,5 +165,132 @@ describe('parseAndValidateGates', () => {
       screens,
     );
     expect(result[0].dismiss).toEqual({ type: 'system-permission', allow: false });
+  });
+
+  // Run from 2026-04-29 (build ios-pr-8-1777461958451) had 4/5 flows fail
+  // because the cold-launch preamble emitted `tapOn: { id: "continue" }` for a
+  // SwiftUI `Button("Continue")` with no `.accessibilityIdentifier(...)`. The
+  // synthetic id never matched anything on device, the tap silently timed out,
+  // and assertions downstream failed. These tests pin the demote-to-tap fix.
+  describe('tap-id gates and synthetic ids', () => {
+    const a11yScreens: Screen[] = [
+      // 'continue_button' is a real .accessibilityIdentifier(...) value
+      screen('GateA', [
+        { id: 'continue_button', type: 'element', accessibilityId: 'continue_button' },
+      ]),
+      // 'continue' is a synthetic id derived from Button("Continue") — no real a11y id
+      screen('GateB', [{ id: 'continue', type: 'button', text: 'Continue' }]),
+      // No matching id at all
+      screen('GateC', [{ id: 'other', type: 'button', text: 'Other' }]),
+    ];
+
+    it('keeps a tap-id gate when the id matches a real accessibilityId', () => {
+      const result = parseAndValidateGates(
+        [{ screen: 'GateA', dismiss: { type: 'tap-id', id: 'continue_button' } }],
+        a11yScreens,
+      );
+      expect(result).toEqual([
+        { screen: 'GateA', dismiss: { type: 'tap-id', id: 'continue_button' } },
+      ]);
+    });
+
+    it('demotes a tap-id gate to a text-based tap when only a synthetic id matches', () => {
+      const result = parseAndValidateGates(
+        [{ screen: 'GateB', dismiss: { type: 'tap-id', id: 'continue' } }],
+        a11yScreens,
+      );
+      expect(result).toEqual([
+        { screen: 'GateB', dismiss: { type: 'tap', label: 'Continue' } },
+      ]);
+    });
+
+    it('drops a tap-id gate when neither real a11y id nor synthetic id matches', () => {
+      const result = parseAndValidateGates(
+        [{ screen: 'GateC', dismiss: { type: 'tap-id', id: 'continue' } }],
+        a11yScreens,
+      );
+      expect(result).toEqual([]);
+    });
+  });
+});
+
+// Run from 2026-04-29 (Nola PR#8) had no preauth gate emitted because
+// ENTRY_POINT_HINTS only matched 2-3 segments deep — the repo's routing file
+// at `ios/app/App/AppRouter.swift` was never read, so the AI got just a bare
+// screen list and missed LanguageGateView's "Continue" gate. These tests pin
+// the broadened-glob fix.
+describe('LaunchStateDetector entry-point discovery', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'launch-state-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function write(rel: string, content: string): void {
+    const full = path.join(tmp, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  }
+
+  // Captures whatever prompt the detector sends to ClaudeClient.analyzeCode,
+  // returns a stub JSON response so detect() can finish parsing.
+  class CapturingClient extends ClaudeClient {
+    public lastPrompt = '';
+    constructor() {
+      super();
+    }
+    override async analyzeCode(_code: string, instruction: string): Promise<string> {
+      this.lastPrompt = instruction;
+      return JSON.stringify({
+        initialScreen: 'LanguageGateView',
+        requiresAuth: true,
+        authScreens: ['LanguageGateView'],
+        postAuthEntry: null,
+        authMechanism: 'unknown',
+        preAuthGates: [],
+      });
+    }
+  }
+
+  it('reads AppRouter.swift and the *App.swift entry from a deep iOS layout (Nola PR#8 repro)', async () => {
+    write('ios/Nola.xcodeproj/project.pbxproj', '');
+    write('ios/app/App/AppRouter.swift', '// AppRouter.swift content — Gate enum lives here');
+    write('ios/app/App/NolaApp.swift', '// NolaApp.swift content — @main struct');
+    write('ios/app/Shared/LanguageGateView.swift', 'struct LanguageGateView: View {}');
+
+    const client = new CapturingClient();
+    const detector = new LaunchStateDetector(client);
+    const screens: Screen[] = [{
+      name: 'LanguageGateView',
+      path: 'ios/app/Shared/LanguageGateView.swift',
+      type: 'swiftui-view',
+      elements: [],
+    }];
+
+    await detector.detect(screens, 'swift', path.join(tmp, 'ios'));
+
+    expect(client.lastPrompt).toContain('AppRouter.swift');
+    expect(client.lastPrompt).toContain('NolaApp.swift');
+    expect(client.lastPrompt).toContain('Gate enum lives here');
+  });
+
+  it('still picks up traditional flat layouts (AppDelegate.swift directly under ios/<project>)', async () => {
+    write('ios/MyApp.xcodeproj/project.pbxproj', '');
+    write('ios/MyApp/AppDelegate.swift', '// classic AppDelegate');
+
+    const client = new CapturingClient();
+    const detector = new LaunchStateDetector(client);
+    await detector.detect(
+      [{ name: 'Home', path: 'ios/MyApp/HomeView.swift', type: 'swiftui-view', elements: [] }],
+      'swift',
+      path.join(tmp, 'ios'),
+    );
+
+    expect(client.lastPrompt).toContain('AppDelegate.swift');
+    expect(client.lastPrompt).toContain('classic AppDelegate');
   });
 });

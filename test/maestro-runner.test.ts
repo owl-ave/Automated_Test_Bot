@@ -1,4 +1,4 @@
-import { computePollTimeoutMs, MaestroBuildTimeoutError, mapBuildToResults, flattenTestcases } from '../src/modules/browserstack/maestro-runner';
+import { computePollTimeoutMs, MaestroBuildTimeoutError, mapBuildToResults, flattenTestcases, extractErrorString } from '../src/modules/browserstack/maestro-runner';
 import { MaestroPollConfig } from '../src/config/thresholds';
 import { Device } from '../src/config/devices';
 import axios from 'axios';
@@ -242,6 +242,36 @@ describe('mapBuildToResults — defensive testcases handling', () => {
     expect(results[0].videoUrl).toBe('https://session-level.video.mp4');
   });
 
+  it('surfaces nested testcase error objects as readable error strings (run from 2026-04-29 repro)', async () => {
+    // Real symptom: 4/4 ios failures showed "Unknown error" because BS returned
+    // testcase errors as { short_error_message, message } objects, not strings.
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        status: 'failed',
+        testcases: {
+          data: [
+            {
+              class: 'waitlist-onboarding',
+              testcases: [
+                {
+                  name: 'waitlist-onboarding-screen-renders-join-entry-points',
+                  status: 'failed',
+                  duration: 23.0,
+                  video: 'https://api.browserstack.com/.../waitlist/video',
+                  error: { short_error_message: 'Element "Continue" not visible', message: 'long stack trace...' },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const results = await mapBuildToResults('build-9', makeBuild({ data: [] }), auth, devices);
+    expect(results).toHaveLength(1);
+    expect(results[0].status).toBe('fail');
+    expect(results[0].error).toBe('Element "Continue" not visible');
+  });
+
   it('uses session-level error as fallback for failed testcases without their own error', async () => {
     mockedAxios.get.mockResolvedValueOnce({
       data: {
@@ -323,5 +353,56 @@ describe('flattenTestcases', () => {
       ],
     });
     expect(out!.map((t) => t.name)).toEqual(['ok', 'still-ok']);
+  });
+
+  // BS Maestro v2 sometimes returns testcase errors as { short_error_message, message }
+  // instead of a plain string — same shape as session.error. Before this fix the
+  // typeof === 'string' guard silently dropped them, surfacing as "Unknown error"
+  // in the PR comment (run from 2026-04-29 had 4 of 4 failures masked this way).
+  it('extracts nested error objects on testcases (flat array shape)', () => {
+    const out = flattenTestcases([
+      { name: 'a', status: 'failed', error: { short_error_message: 'tap target not found' } },
+      { name: 'b', status: 'failed', error: { message: 'element not visible' } },
+      { name: 'c', status: 'passed' },
+    ]);
+    expect(out![0].error).toBe('tap target not found');
+    expect(out![1].error).toBe('element not visible');
+    expect(out![2].error).toBeUndefined();
+  });
+
+  it('extracts nested error objects on testcases (BS v2 nested data shape)', () => {
+    const out = flattenTestcases({
+      data: [
+        {
+          class: 'flow',
+          testcases: [
+            { name: 'flow', status: 'failed', error: { short_error_message: 'gate dismiss failed' } },
+          ],
+        },
+      ],
+    });
+    expect(out![0].error).toBe('gate dismiss failed');
+  });
+});
+
+describe('extractErrorString', () => {
+  it('returns plain string errors as-is', () => {
+    expect(extractErrorString('boom')).toBe('boom');
+  });
+
+  it('prefers short_error_message over message', () => {
+    expect(extractErrorString({ short_error_message: 'short', message: 'long' })).toBe('short');
+  });
+
+  it('falls back to message when short_error_message is absent', () => {
+    expect(extractErrorString({ message: 'fallback' })).toBe('fallback');
+  });
+
+  it('returns undefined for empty/missing/non-string fields', () => {
+    expect(extractErrorString(undefined)).toBeUndefined();
+    expect(extractErrorString(null)).toBeUndefined();
+    expect(extractErrorString('')).toBeUndefined();
+    expect(extractErrorString({})).toBeUndefined();
+    expect(extractErrorString({ short_error_message: 42 })).toBeUndefined();
   });
 });

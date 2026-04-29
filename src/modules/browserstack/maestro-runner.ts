@@ -240,15 +240,14 @@ export async function mapBuildToResults(
           return null;
         });
 
+      logger.debug('Maestro session details raw', { sessionId: session.id, sessionDetails });
+
       // When a session is `skipped` (parse failure, no device, etc.) there are
       // zero testcases — the real reason lives at session.error. Fall back to
       // it before the per-testcase error so users see "No Tests Ran: parse
       // error" instead of an empty error field.
       const sessionError =
-        session.error?.short_error_message ||
-        session.error?.message ||
-        sessionDetails?.error?.short_error_message ||
-        sessionDetails?.error?.message;
+        extractErrorString(session.error) || extractErrorString(sessionDetails?.error);
       const sessionVideoUrl = sessionDetails?.video_url || undefined;
 
       const flatTcs = flattenTestcases(sessionDetails?.testcases) ?? flattenTestcases(session.testcases) ?? [];
@@ -309,7 +308,7 @@ export function flattenTestcases(raw: unknown): FlatTestcase[] | null {
       .map((tc) => ({
         name: typeof tc.name === 'string' ? tc.name : undefined,
         status: typeof tc.status === 'string' ? tc.status : undefined,
-        error: typeof tc.error === 'string' ? tc.error : undefined,
+        error: extractErrorString(tc.error),
         video: typeof tc.video === 'string' ? tc.video : typeof tc.video_url === 'string' ? tc.video_url : undefined,
         duration: typeof tc.duration === 'number' ? tc.duration : undefined,
       }));
@@ -329,13 +328,26 @@ export function flattenTestcases(raw: unknown): FlatTestcase[] | null {
       flat.push({
         name: typeof t.name === 'string' ? t.name : undefined,
         status: typeof t.status === 'string' ? t.status : undefined,
-        error: typeof t.error === 'string' ? t.error : undefined,
+        error: extractErrorString(t.error),
         video: typeof t.video === 'string' ? t.video : typeof t.video_url === 'string' ? t.video_url : undefined,
         duration: typeof t.duration === 'number' ? t.duration : undefined,
       });
     }
   }
   return flat;
+}
+
+// BS Maestro v2 returns testcase + session errors in mixed shapes:
+//   - plain string                          (older / simple cases)
+//   - { short_error_message?, message? }    (session-level + sometimes per-testcase)
+// Centralised so we don't re-derive the precedence in two places.
+export function extractErrorString(raw: unknown): string | undefined {
+  if (typeof raw === 'string') return raw || undefined;
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as { short_error_message?: unknown; message?: unknown };
+  if (typeof o.short_error_message === 'string' && o.short_error_message) return o.short_error_message;
+  if (typeof o.message === 'string' && o.message) return o.message;
+  return undefined;
 }
 
 async function uploadTestSuite(zipPath: string, auth: { username: string; password: string }): Promise<string> {
@@ -408,7 +420,7 @@ interface MaestroBuildResponse {
       // BrowserStack occasionally returns a non-array shape (object map / null)
       // here for failed or skipped sessions. Widen the type so consumers must
       // narrow with Array.isArray before iterating.
-      testcases?: Array<{ name?: string; status?: string; error?: string }> | Record<string, unknown> | null;
+      testcases?: Array<{ name?: string; status?: string; error?: string | MaestroSessionError }> | Record<string, unknown> | null;
     }>;
   }>;
 }
@@ -420,7 +432,7 @@ interface MaestroSessionDetails {
   testcases?: Array<{
     name?: string;
     status?: string;
-    error?: string;
+    error?: string | MaestroSessionError;
     video_url?: string;
   }> | Record<string, unknown> | null;
 }

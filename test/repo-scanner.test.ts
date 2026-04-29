@@ -156,6 +156,39 @@ struct SettingsView: View {
       expect(texts).toContain('Theme');
     });
 
+    // Distinguishing real .accessibilityIdentifier(...) values from synthetic
+    // text-derived ids is what stops the cold-launch gate validator from
+    // emitting `tapOn: { id: "continue" }` against a button whose only real
+    // selector is the text "Continue" — the silent-failure mode in the iOS
+    // run from 2026-04-29.
+    it('populates accessibilityId only for real .accessibilityIdentifier(...) values', () => {
+      writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
+      writeFile(tmpDir, 'WaitlistView.swift', `
+import SwiftUI
+struct WaitlistView: View {
+  var body: some View {
+    VStack {
+      Button("Continue") { }
+        .accessibilityIdentifier("continue_button")
+      Button("Already have a code") { }
+    }
+  }
+}
+`);
+
+      const scanner = new RepoScanner(tmpDir);
+      const result = scanner.scan();
+
+      const view = result.screens.find((s) => s.name === 'WaitlistView')!;
+      const continueBtn = view.elements.find((e) => e.accessibilityId === 'continue_button');
+      expect(continueBtn).toBeDefined();
+      expect(continueBtn!.id).toBe('continue_button');
+
+      const alreadyHaveCode = view.elements.find((e) => e.text === 'Already have a code');
+      expect(alreadyHaveCode).toBeDefined();
+      expect(alreadyHaveCode!.accessibilityId).toBeUndefined();
+    });
+
     it('ignores non-screen Swift files', () => {
       writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
       writeFile(tmpDir, 'NetworkManager.swift', `
