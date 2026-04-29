@@ -178,45 +178,71 @@ async function main(): Promise<void> {
       context.moduleStatuses.push({ name: 'BrowserStack', status: 'skipped', durationMs: 0, error: reason });
     }
 
-    // 6. AI Validator (Non-critical, uses Retry)
-    const { runAiValidator } = await import('./modules/ai-validator');
-    await executeStep(context, 'AiValidator', () => runAiValidator(context), false, true);
+    // Modules 6-16 (AiValidator → KnowledgeBase) are extended capabilities that
+    // depend on a working core pipeline. They're gated off by default until the
+    // core (CodeReader → AppBuilder → AppAnalyzer → ScenarioBrain → TestWriter
+    // → BrowserStack → Reporter) is producing reliable pass-rate. Set
+    // ENABLE_EXTENDED_TESTING=true to opt back in once the core stabilises.
+    const extendedEnabled = process.env.ENABLE_EXTENDED_TESTING === 'true';
+    const extendedSkipReason = 'ENABLE_EXTENDED_TESTING is not set — extended modules disabled in core-only mode';
 
-    // 7. Self-Healer (Non-critical)
-    const { runSelfHealer } = await import('./modules/self-healer');
-    await executeStep(context, 'SelfHealer', () => runSelfHealer(context), false);
+    if (extendedEnabled) {
+      // 6. AI Validator (Non-critical, uses Retry)
+      const { runAiValidator } = await import('./modules/ai-validator');
+      await executeStep(context, 'AiValidator', () => runAiValidator(context), false, true);
 
-    // 9. Accessibility Testing (Non-critical)
-    const { runAccessibility } = await import('./modules/accessibility');
-    await executeStep(context, 'Accessibility', () => runAccessibility(context), false);
+      // 7. Self-Healer (Non-critical)
+      const { runSelfHealer } = await import('./modules/self-healer');
+      await executeStep(context, 'SelfHealer', () => runSelfHealer(context), false);
 
-    // 10. Performance Testing (Non-critical)
-    const { runPerformance } = await import('./modules/performance');
-    await executeStep(context, 'Performance', () => runPerformance(context), false);
+      // 9. Accessibility Testing (Non-critical)
+      const { runAccessibility } = await import('./modules/accessibility');
+      await executeStep(context, 'Accessibility', () => runAccessibility(context), false);
 
-    // 11. API Tester (Non-critical, uses Retry)
-    const { runApiTester } = await import('./modules/api-tester');
-    await executeStep(context, 'ApiTester', () => runApiTester(context), false, true);
+      // 10. Performance Testing (Non-critical)
+      const { runPerformance } = await import('./modules/performance');
+      await executeStep(context, 'Performance', () => runPerformance(context), false);
 
-    // 12. Security Testing (Non-critical)
-    const { runSecurity } = await import('./modules/security');
-    await executeStep(context, 'Security', () => runSecurity(context), false);
+      // 11. API Tester (Non-critical, uses Retry)
+      const { runApiTester } = await import('./modules/api-tester');
+      await executeStep(context, 'ApiTester', () => runApiTester(context), false, true);
 
-    // 13. Visual Regression (Non-critical)
-    const { runVisualRegression } = await import('./modules/visual-regression');
-    await executeStep(context, 'VisualRegression', () => runVisualRegression(context), false);
+      // 12. Security Testing (Non-critical)
+      const { runSecurity } = await import('./modules/security');
+      await executeStep(context, 'Security', () => runSecurity(context), false);
 
-    // 14. Chaos Testing (Non-critical)
-    const { runChaos } = await import('./modules/chaos');
-    await executeStep(context, 'Chaos', () => runChaos(context), false);
+      // 13. Visual Regression (Non-critical)
+      const { runVisualRegression } = await import('./modules/visual-regression');
+      await executeStep(context, 'VisualRegression', () => runVisualRegression(context), false);
 
-    // 15. Test Prioritizer (Non-critical)
-    const { runPrioritizer } = await import('./modules/prioritizer');
-    await executeStep(context, 'Prioritizer', () => runPrioritizer(context), false);
+      // 14. Chaos Testing (Non-critical)
+      const { runChaos } = await import('./modules/chaos');
+      await executeStep(context, 'Chaos', () => runChaos(context), false);
 
-    // 16. Knowledge Base (Non-critical)
-    const { runKnowledgeBase } = await import('./modules/knowledge-base');
-    await executeStep(context, 'KnowledgeBase', () => runKnowledgeBase(context), false);
+      // 15. Test Prioritizer (Non-critical)
+      const { runPrioritizer } = await import('./modules/prioritizer');
+      await executeStep(context, 'Prioritizer', () => runPrioritizer(context), false);
+
+      // 16. Knowledge Base (Non-critical)
+      const { runKnowledgeBase } = await import('./modules/knowledge-base');
+      await executeStep(context, 'KnowledgeBase', () => runKnowledgeBase(context), false);
+    } else {
+      logger.log(extendedSkipReason);
+      for (const moduleName of [
+        'AiValidator',
+        'SelfHealer',
+        'Accessibility',
+        'Performance',
+        'ApiTester',
+        'Security',
+        'VisualRegression',
+        'Chaos',
+        'Prioritizer',
+        'KnowledgeBase',
+      ]) {
+        context.moduleStatuses.push({ name: moduleName, status: 'skipped', durationMs: 0, error: extendedSkipReason });
+      }
+    }
 
     // 8. PR Reporter (Critical - always runs last to report all collected data)
     const { runReporter } = await import('./modules/reporter');

@@ -2,6 +2,7 @@ import * as path from 'path';
 import { PipelineContext, ModuleResult, Screen } from '../../types';
 import { IndustryDetector } from './industry-detector';
 import { FlowMapper } from './flow-mapper';
+import { LaunchStateDetector } from './launch-state';
 import { Logger } from '../../utils/logger';
 
 export async function runAppAnalyzer(context: PipelineContext): Promise<ModuleResult> {
@@ -19,6 +20,16 @@ export async function runAppAnalyzer(context: PipelineContext): Promise<ModuleRe
     context.codeAnalysis.criticalFlows = await flowMapper.mapFlows(
       context.codeAnalysis.screens,
       context.codeAnalysis.apiEndpoints,
+    );
+
+    // Detect cold-launch behaviour (initial screen, auth requirement, pre-auth
+    // screens). ScenarioBrain consumes this to decide whether generated flows
+    // need an auth prefix and which flows to drop when no creds are configured.
+    const launchStateDetector = new LaunchStateDetector();
+    context.codeAnalysis.launchState = await launchStateDetector.detect(
+      context.codeAnalysis.screens,
+      context.codeAnalysis.framework,
+      context.mobilePath,
     );
 
     const changedScreens = resolveChangedScreens(
@@ -45,6 +56,12 @@ export async function runAppAnalyzer(context: PipelineContext): Promise<ModuleRe
     logger.log('App analysis complete', {
       industry: context.codeAnalysis.industry,
       flows: context.codeAnalysis.criticalFlows.length,
+      launchState: context.codeAnalysis.launchState && {
+        initialScreen: context.codeAnalysis.launchState.initialScreen,
+        requiresAuth: context.codeAnalysis.launchState.requiresAuth,
+        authScreens: context.codeAnalysis.launchState.authScreens.length,
+        source: context.codeAnalysis.launchState.source,
+      },
     });
 
     return { moduleName: 'AppAnalyzer', status: 'success', data: context.codeAnalysis };

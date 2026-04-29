@@ -45,6 +45,11 @@ export interface Thresholds {
 
   // BrowserStack Maestro poll configuration
   maestroPoll: MaestroPollConfig;
+
+  // Hard cap on flows generated per PR. BrowserStack bills device-minutes,
+  // so even 13 happy-path flows can burn ~13 min of quota. PR-scoping +
+  // priority sort + this cap together keep per-PR cost predictable.
+  maxFlowsPerPr: number;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -89,6 +94,10 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
     intervalMs: 5_000,
     progressLogIntervalMs: 60_000,
   },
+
+  // Cap of 8 flows per PR keeps per-run device time near 8 min even when
+  // PR-scoped filtering matches many flow groups. Override with MAESTRO_MAX_FLOWS_PER_PR.
+  maxFlowsPerPr: 8,
 };
 
 export function getThresholds(): Thresholds {
@@ -121,5 +130,6 @@ export function getThresholds(): Thresholds {
       intervalMs: parseInt(process.env.MAESTRO_POLL_INTERVAL_MS || '5000', 10),
       progressLogIntervalMs: parseInt(process.env.MAESTRO_POLL_PROGRESS_LOG_INTERVAL_MS || '60000', 10),
     },
+    maxFlowsPerPr: Math.max(1, parseInt(process.env.MAESTRO_MAX_FLOWS_PER_PR || '8', 10)),
   };
 }

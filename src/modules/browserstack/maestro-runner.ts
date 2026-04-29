@@ -221,7 +221,7 @@ async function cancelBuildBestEffort(
   }
 }
 
-async function mapBuildToResults(
+export async function mapBuildToResults(
   buildId: string,
   build: MaestroBuildResponse,
   auth: { username: string; password: string },
@@ -239,8 +239,7 @@ async function mapBuildToResults(
           logger.warn('Failed to fetch session details', { sessionId: session.id, error: String(err) });
           return null;
         });
-      const status = mapStatus(session.status || sessionDetails?.status);
-      const videoUrl = sessionDetails?.video_url ?? sessionDetails?.testcases?.find((tc) => tc.video_url)?.video_url;
+
       // When a session is `skipped` (parse failure, no device, etc.) there are
       // zero testcases — the real reason lives at session.error. Fall back to
       // it before the per-testcase error so users see "No Tests Ran: parse
@@ -250,19 +249,93 @@ async function mapBuildToResults(
         session.error?.message ||
         sessionDetails?.error?.short_error_message ||
         sessionDetails?.error?.message;
-      const testcaseError = sessionDetails?.testcases?.find((tc) => tc.status && tc.status.toLowerCase() !== 'passed')?.error;
-      results.push({
-        scenario: session.testcases?.[0]?.name ?? device.device ?? 'flow',
-        status,
-        device: deviceLabel,
-        sessionId: session.id,
-        duration: typeof session.duration === 'number' ? session.duration * 1000 : 0,
-        videoUrl,
-        error: testcaseError || sessionError,
-      });
+      const sessionVideoUrl = sessionDetails?.video_url || undefined;
+
+      const flatTcs = flattenTestcases(sessionDetails?.testcases) ?? flattenTestcases(session.testcases) ?? [];
+
+      if (flatTcs.length === 0) {
+        // No per-testcase data — emit one session-level result so the run is
+        // still represented in the report (skipped builds, parse errors, etc.).
+        results.push({
+          scenario: device.device ?? 'flow',
+          status: mapStatus(session.status || sessionDetails?.status),
+          device: deviceLabel,
+          sessionId: session.id,
+          duration: typeof session.duration === 'number' ? session.duration * 1000 : 0,
+          videoUrl: sessionVideoUrl,
+          error: sessionError,
+        });
+        continue;
+      }
+
+      // Per-testcase results: each Maestro flow becomes its own TestResult so
+      // the PR comment can link the flow's video and error individually.
+      for (const tc of flatTcs) {
+        results.push({
+          scenario: tc.name || device.device || 'flow',
+          status: mapStatus(tc.status),
+          device: deviceLabel,
+          sessionId: session.id,
+          duration: typeof tc.duration === 'number' ? Math.round(tc.duration * 1000) : 0,
+          videoUrl: tc.video || sessionVideoUrl,
+          error: tc.error || (mapStatus(tc.status) !== 'pass' ? sessionError : undefined),
+        });
+      }
     }
   }
   return results;
+}
+
+interface FlatTestcase {
+  name?: string;
+  status?: string;
+  error?: string;
+  video?: string;
+  duration?: number;
+}
+
+// BrowserStack's Maestro v2 session-details endpoint returns `testcases` in
+// two observed shapes:
+//   1. Flat array of testcase objects (older / simpler responses).
+//   2. Aggregated object: `{ count, status, data: [{ class, testcases: [...] }] }`
+// where each leaf testcase carries a `video` field (NOT `video_url`).
+// flattenTestcases normalises both into a flat list. Returns `null` when the
+// shape is unrecognised or empty so the caller can fall back to session-level
+// data instead of producing zero results.
+export function flattenTestcases(raw: unknown): FlatTestcase[] | null {
+  if (Array.isArray(raw)) {
+    return raw
+      .filter((tc): tc is Record<string, unknown> => Boolean(tc) && typeof tc === 'object')
+      .map((tc) => ({
+        name: typeof tc.name === 'string' ? tc.name : undefined,
+        status: typeof tc.status === 'string' ? tc.status : undefined,
+        error: typeof tc.error === 'string' ? tc.error : undefined,
+        video: typeof tc.video === 'string' ? tc.video : typeof tc.video_url === 'string' ? tc.video_url : undefined,
+        duration: typeof tc.duration === 'number' ? tc.duration : undefined,
+      }));
+  }
+  if (!raw || typeof raw !== 'object') return null;
+
+  const obj = raw as { data?: unknown };
+  if (!Array.isArray(obj.data)) return null;
+  const flat: FlatTestcase[] = [];
+  for (const cls of obj.data) {
+    if (!cls || typeof cls !== 'object') continue;
+    const inner = (cls as { testcases?: unknown }).testcases;
+    if (!Array.isArray(inner)) continue;
+    for (const tc of inner) {
+      if (!tc || typeof tc !== 'object') continue;
+      const t = tc as Record<string, unknown>;
+      flat.push({
+        name: typeof t.name === 'string' ? t.name : undefined,
+        status: typeof t.status === 'string' ? t.status : undefined,
+        error: typeof t.error === 'string' ? t.error : undefined,
+        video: typeof t.video === 'string' ? t.video : typeof t.video_url === 'string' ? t.video_url : undefined,
+        duration: typeof t.duration === 'number' ? t.duration : undefined,
+      });
+    }
+  }
+  return flat;
 }
 
 async function uploadTestSuite(zipPath: string, auth: { username: string; password: string }): Promise<string> {
@@ -332,7 +405,10 @@ interface MaestroBuildResponse {
       start_time?: string;
       duration?: number;
       error?: MaestroSessionError;
-      testcases?: Array<{ name?: string; status?: string; error?: string }>;
+      // BrowserStack occasionally returns a non-array shape (object map / null)
+      // here for failed or skipped sessions. Widen the type so consumers must
+      // narrow with Array.isArray before iterating.
+      testcases?: Array<{ name?: string; status?: string; error?: string }> | Record<string, unknown> | null;
     }>;
   }>;
 }
@@ -346,5 +422,5 @@ interface MaestroSessionDetails {
     status?: string;
     error?: string;
     video_url?: string;
-  }>;
+  }> | Record<string, unknown> | null;
 }

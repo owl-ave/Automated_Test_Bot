@@ -1,6 +1,11 @@
-import { Flow, Screen, MaestroFlow } from '../../types';
+import { Flow, Screen, MaestroFlow, LaunchState, AuthConfig } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
-import { getMaestroFlowPrompt, getMaestroDiffPrompt } from '../../ai/prompts/feature-generation';
+import {
+  getMaestroFlowPrompt,
+  getMaestroDiffPrompt,
+  MaestroPromptCreds,
+  MaestroPromptLaunchState,
+} from '../../ai/prompts/feature-generation';
 import { Logger } from '../../utils/logger';
 
 // Generates Maestro flow YAML by direct AI call. Replaces the old Gherkin
@@ -13,6 +18,32 @@ export interface FeatureGenInputs {
   framework: string;
   screens: Screen[];
   appId: string;
+  launchState?: LaunchState;
+  authConfig?: AuthConfig;
+}
+
+// Distil AuthConfig into the credential shape the prompt module expects, or
+// return undefined when no usable creds are present (so the prompt switches to
+// the no-creds branch).
+function toPromptCreds(auth?: AuthConfig): MaestroPromptCreds | undefined {
+  if (!auth || auth.type === 'none' || auth.type === 'guest') return undefined;
+  const creds: MaestroPromptCreds = {};
+  if (auth.email) creds.email = auth.email;
+  if (auth.password) creds.password = auth.password;
+  if (auth.phone) creds.phone = auth.phone;
+  if (auth.username) creds.username = auth.username;
+  if (!creds.email && !creds.phone && !creds.username) return undefined;
+  return creds;
+}
+
+function toPromptLaunchState(ls?: LaunchState): MaestroPromptLaunchState | undefined {
+  if (!ls) return undefined;
+  return {
+    initialScreen: ls.initialScreen,
+    requiresAuth: ls.requiresAuth,
+    authScreens: ls.authScreens,
+    postAuthEntry: ls.postAuthEntry,
+  };
 }
 
 export class MaestroAuthor {
@@ -29,6 +60,8 @@ export class MaestroAuthor {
     const CONCURRENCY = 5;
     const out: MaestroFlow[] = [];
     const duplicateLabels = computeDuplicateLabels(inputs.screens);
+    const launchState = toPromptLaunchState(inputs.launchState);
+    const creds = toPromptCreds(inputs.authConfig);
 
     const generateOne = async (flow: Flow): Promise<MaestroFlow[]> => {
       try {
@@ -43,6 +76,8 @@ export class MaestroAuthor {
           screens: flowScreens.map((s) => ({ name: s.name, elements: s.elements })),
           appId: inputs.appId,
           duplicateLabels,
+          launchState,
+          creds,
         });
         const response = await this.claudeClient.analyzeCode('', prompt);
         const parsed = this.parseFlowsJson(response, flow.name, inputs.appId);
@@ -76,6 +111,8 @@ export class MaestroAuthor {
       appId: inputs.appId,
       vocab,
       duplicateLabels,
+      launchState: toPromptLaunchState(inputs.launchState),
+      creds: toPromptCreds(inputs.authConfig),
     });
     const response = await this.claudeClient.analyzeCode('', prompt);
     return this.parseFlowsJson(response, 'PR Changes', inputs.appId);

@@ -56,6 +56,19 @@ export interface CodeAnalysis {
   criticalFlows: Flow[];
   minIosVersion?: string;
   minAndroidVersion?: string;
+  launchState?: LaunchState;
+}
+
+// Snapshot of the target app's cold-launch behaviour, used by ScenarioBrain
+// to decide whether generated flows must include an auth prefix and which
+// screens are reachable without credentials.
+export interface LaunchState {
+  initialScreen: string;          // First screen shown on cold launch
+  requiresAuth: boolean;          // Whether auth is mandatory before reaching app content
+  authScreens: string[];          // Pre-auth screens (Login, Signup, Onboarding, etc.)
+  postAuthEntry?: string;         // First screen reached after successful authentication
+  authMechanism?: 'email_password' | 'phone_otp' | 'username_password' | 'biometric' | 'wallet' | 'oauth' | 'unknown';
+  source: 'ai' | 'heuristic';     // How the state was determined (for debugging / confidence)
 }
 
 export interface Screen {
