@@ -354,19 +354,21 @@ function startLogPolling(runId){
 
   if(logPollInterval)clearInterval(logPollInterval);
   let lastCount=0;
+  let inFlight=false;
 
   logPollInterval=setInterval(async()=>{
+    if(inFlight)return;
+    inFlight=true;
     try{
       const data=await api(`/runs/${runId}/logs`);
-      // Append only new logs
-      const newLogs=data.logs.slice(lastCount);
+      const newLogs=(data.logs||[]).slice(lastCount);
       newLogs.forEach(line=>{
         const div=document.createElement('div');
         div.className='log-line'+(line.includes('[ERR]')?' log-err':'');
         div.textContent=line;
         logsDiv.appendChild(div);
       });
-      lastCount=data.logs.length;
+      lastCount=(data.logs||[]).length;
       logsDiv.scrollTop=logsDiv.scrollHeight;
 
       if(data.status==='completed'){
@@ -377,8 +379,8 @@ function startLogPolling(runId){
           statusEl.textContent='FAILED';statusEl.className='text-xs text-red-400 font-semibold';
         }
       }
-    }catch{}
-  },1000);
+    }catch{}finally{inFlight=false;}
+  },5000);
 }
 
 async function loadRuns(){
@@ -405,14 +407,35 @@ async function loadRuns(){
   }catch{}
 }
 
+let viewLogPollInterval=null;
 async function viewRunLogs(runId, repo){
   document.getElementById('selected-run-title').textContent=`Logs: ${repo} (${runId})`;
   const container=document.getElementById('selected-run-logs');
   container.innerHTML='<p class="text-gray-500">Loading...</p>';
+  if(viewLogPollInterval){clearInterval(viewLogPollInterval);viewLogPollInterval=null;}
+
+  const render = (data) => {
+    const lines = (data.logs || []);
+    if(!lines.length){container.innerHTML='<p class="text-gray-500">No logs yet — runner warming up...</p>';return;}
+    container.innerHTML=lines.map(l=>`<div class="log-line${l.includes('[ERR]')?' log-err':''}">${l}</div>`).join('');
+    container.scrollTop=container.scrollHeight;
+  };
+
   try{
     const data=await api(`/runs/${runId}/logs`);
-    container.innerHTML=data.logs.map(l=>`<div class="log-line${l.includes('[ERR]')?' log-err':''}">${l}</div>`).join('');
-    container.scrollTop=container.scrollHeight;
+    render(data);
+    if(data.status==='in_progress'||data.status==='queued'||data.status==='pending'){
+      let inFlight=false;
+      viewLogPollInterval=setInterval(async()=>{
+        if(inFlight)return;
+        inFlight=true;
+        try{
+          const d=await api(`/runs/${runId}/logs`);
+          render(d);
+          if(d.status==='completed'){clearInterval(viewLogPollInterval);viewLogPollInterval=null;}
+        }catch{}finally{inFlight=false;}
+      },5000);
+    }
   }catch{container.innerHTML='<p class="text-red-400">Failed to load logs</p>';}
 }
 

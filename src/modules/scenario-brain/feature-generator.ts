@@ -1,40 +1,53 @@
-import { BddScenario, Flow, Screen } from '../../types';
+import { Flow, Screen, MaestroFlow } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
-import { getFeatureGenerationPrompt } from '../../ai/prompts/feature-generation';
+import { getMaestroFlowPrompt, getMaestroDiffPrompt } from '../../ai/prompts/feature-generation';
 import { Logger } from '../../utils/logger';
 
-export class FeatureGenerator {
-  private logger = new Logger('FeatureGenerator');
+// Generates Maestro flow YAML by direct AI call. Replaces the old Gherkin
+// generator — there's no intermediate BDD step now. The AI is shown the
+// supported Maestro grammar + screen vocabulary and asked for a JSON array of
+// `{feature, scenario, yaml}` objects, which we hydrate into MaestroFlow.
+
+export interface FeatureGenInputs {
+  industry: string;
+  framework: string;
+  screens: Screen[];
+  appId: string;
+}
+
+export class MaestroAuthor {
+  private logger = new Logger('MaestroAuthor');
   private claudeClient: ClaudeClient;
 
   constructor() {
     this.claudeClient = new ClaudeClient();
   }
 
-  // Run per-flow Claude calls in parallel with a bounded concurrency window so a 20-flow
-  // app doesn't take 20x the per-call latency. A hand-rolled pool avoids adding `p-limit`
-  // as a dep for just this one use.
-  async generateFeatures(
-    industry: string,
-    flows: Flow[],
-    framework?: string,
-    allScreens?: Screen[],
-  ): Promise<BddScenario[]> {
+  // Runs per-flow prompts in parallel with a small concurrency window so a
+  // 20-flow app doesn't 20× the per-call latency.
+  async generateFromFlows(flows: Flow[], inputs: FeatureGenInputs): Promise<MaestroFlow[]> {
     const CONCURRENCY = 5;
-    const scenarios: BddScenario[] = [];
+    const out: MaestroFlow[] = [];
 
-    const generateOne = async (flow: Flow): Promise<BddScenario[]> => {
+    const generateOne = async (flow: Flow): Promise<MaestroFlow[]> => {
       try {
-        const flowScreenObjects = allScreens
-          ? (flow.screens.map((name) => allScreens.find((s) => s.name === name)).filter(Boolean) as Screen[])
-          : [];
-        const prompt = getFeatureGenerationPrompt(industry, flow.name, flow.screens, framework, flowScreenObjects);
+        const flowScreens: Screen[] = flow.screens
+          .map((name) => inputs.screens.find((s) => s.name === name))
+          .filter((s): s is Screen => Boolean(s));
+        const prompt = getMaestroFlowPrompt({
+          industry: inputs.industry,
+          flowName: flow.name,
+          screenNames: flow.screens,
+          framework: inputs.framework,
+          screens: flowScreens.map((s) => ({ name: s.name, elements: s.elements })),
+          appId: inputs.appId,
+        });
         const response = await this.claudeClient.analyzeCode('', prompt);
-        const parsed = this.parseFeatures(response, flow.name);
-        this.logger.log(`Generated ${parsed.length} scenarios for ${flow.name}`);
+        const parsed = this.parseFlowsJson(response, flow.name, inputs.appId);
+        this.logger.log(`Generated ${parsed.length} flows for ${flow.name}`);
         return parsed;
       } catch (error) {
-        this.logger.warn(`Failed to generate features for ${flow.name}`, error);
+        this.logger.warn(`Failed to generate flows for ${flow.name}`, error);
         return [];
       }
     };
@@ -42,101 +55,92 @@ export class FeatureGenerator {
     for (let i = 0; i < flows.length; i += CONCURRENCY) {
       const batch = flows.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.all(batch.map(generateOne));
-      for (const list of batchResults) scenarios.push(...list);
+      for (const list of batchResults) out.push(...list);
     }
 
-    return scenarios;
+    return out;
   }
 
-  parseResponse(response: string, flowName: string = 'PR Changes'): BddScenario[] {
-    return this.parseFeatures(response, flowName);
+  async generateFromDiff(
+    diffSummary: string,
+    inputs: FeatureGenInputs,
+  ): Promise<MaestroFlow[]> {
+    const vocab = inputs.screens.flatMap((s) => s.elements);
+    const prompt = getMaestroDiffPrompt({
+      industry: inputs.industry,
+      framework: inputs.framework,
+      diffSummary,
+      appId: inputs.appId,
+      vocab,
+    });
+    const response = await this.claudeClient.analyzeCode('', prompt);
+    return this.parseFlowsJson(response, 'PR Changes', inputs.appId);
   }
 
-  private parseFeatures(response: string, flowName: string): BddScenario[] {
-    const scenarios: BddScenario[] = [];
-    // Strip markdown code fences — Claude often wraps Gherkin in ```gherkin ... ```
-    const cleaned = response.replace(/```(?:gherkin|feature|cucumber)?\n?/gi, '');
-    const lines = cleaned.split('\n');
-    let currentScenario: { scenario: string; steps: any[] } | null = null;
+  // The model is asked for raw JSON, but it sometimes still wraps in fences or
+  // bookends with prose. Strip those, then JSON.parse strictly. Anything that
+  // doesn't look like the expected shape gets dropped with a warning so a
+  // single bad item doesn't tank the whole batch.
+  parseFlowsJson(response: string, defaultFeature: string, appId: string): MaestroFlow[] {
+    const cleaned = response
+      .replace(/```(?:json|yaml|yml)?\n?/gi, '')
+      .replace(/```/g, '')
+      .trim();
 
-    for (const line of lines) {
-      const trimmed = line.trim();
+    const start = cleaned.indexOf('[');
+    const end = cleaned.lastIndexOf(']');
+    if (start < 0 || end <= start) {
+      this.logger.warn('Model returned no JSON array — dropping output');
+      return [];
+    }
 
-      if (trimmed.startsWith('Scenario:')) {
-        if (currentScenario) {
-          this.pushValidated(scenarios, currentScenario, flowName);
-        }
-        currentScenario = { scenario: trimmed.replace('Scenario:', '').trim(), steps: [] };
-      } else if (
-        currentScenario &&
-        (trimmed.startsWith('Given ') ||
-          trimmed.startsWith('When ') ||
-          trimmed.startsWith('Then ') ||
-          trimmed.startsWith('And '))
-      ) {
-        const [keyword, ...rest] = trimmed.split(' ');
-        currentScenario.steps.push({
-          keyword: keyword as any,
-          text: rest.join(' '),
-        });
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(cleaned.slice(start, end + 1));
+    } catch (err) {
+      this.logger.warn('Failed to parse JSON from model', { error: String(err) });
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+
+    const out: MaestroFlow[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as { feature?: unknown; scenario?: unknown; yaml?: unknown };
+      const feature = typeof obj.feature === 'string' && obj.feature ? obj.feature : defaultFeature;
+      const scenario = typeof obj.scenario === 'string' && obj.scenario ? obj.scenario : '';
+      const body = typeof obj.yaml === 'string' ? obj.yaml.trim() : '';
+      if (!scenario || !body) {
+        this.logger.warn('Skipping malformed flow', { feature, scenario, hasBody: Boolean(body) });
+        continue;
       }
+      out.push({
+        feature,
+        scenario,
+        appId,
+        fileName: `${slugify(scenario)}.yaml`,
+        yaml: assembleFlowYaml(appId, body),
+        issues: [],
+      });
     }
-
-    if (currentScenario) {
-      this.pushValidated(scenarios, currentScenario, flowName);
-    }
-
-    return scenarios;
+    return out;
   }
+}
 
-  // Enforce a sane Gherkin shape:
-  //   - scenario name must be non-empty
-  //   - at least one step
-  //   - the first non-"And" keyword must be Given, then When may follow, then Then
-  //   - "And" inherits the previous keyword, so we project it before ordering check
-  // Invalid scenarios are dropped with a warning so the downstream test-writer never tries
-  // to convert broken Gherkin into Appium code.
-  private pushValidated(
-    scenarios: BddScenario[],
-    candidate: { scenario: string; steps: any[] },
-    flowName: string,
-  ): void {
-    if (!candidate.scenario) {
-      this.logger.warn(`Dropping scenario with empty name in flow "${flowName}"`);
-      return;
-    }
-    if (candidate.steps.length === 0) {
-      this.logger.warn(`Dropping scenario "${candidate.scenario}" (no steps)`);
-      return;
-    }
+// Maestro flow files have two YAML documents: the config block (appId) then
+// the commands sequence, separated by `---`. The model emits only the
+// commands sequence so the appId-substitution stays under our control.
+function assembleFlowYaml(appId: string, body: string): string {
+  const trimmed = body.replace(/^---\s*/m, '').trim();
+  return `appId: ${JSON.stringify(appId)}\n---\n${trimmed}\n`;
+}
 
-    const projected: string[] = [];
-    let last: 'Given' | 'When' | 'Then' | null = null;
-    for (const step of candidate.steps) {
-      if (step.keyword === 'And') {
-        if (!last) {
-          this.logger.warn(
-            `Dropping scenario "${candidate.scenario}" — starts with "And" (no preceding Given/When/Then)`,
-          );
-          return;
-        }
-        projected.push(last);
-      } else {
-        last = step.keyword;
-        projected.push(step.keyword);
-      }
-    }
-
-    const rank: Record<string, number> = { Given: 0, When: 1, Then: 2 };
-    for (let i = 1; i < projected.length; i++) {
-      if (rank[projected[i]] < rank[projected[i - 1]]) {
-        this.logger.warn(
-          `Dropping scenario "${candidate.scenario}" — invalid step order ${projected.join(' → ')}`,
-        );
-        return;
-      }
-    }
-
-    scenarios.push({ feature: flowName, scenario: candidate.scenario, steps: candidate.steps });
-  }
+function slugify(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'flow'
+  );
 }

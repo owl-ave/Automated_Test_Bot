@@ -1,5 +1,5 @@
 import { RiskScorer, HistoricalTestRun } from '../src/modules/prioritizer/risk-scorer';
-import { BddScenario, DiffFile } from '../src/types';
+import { MaestroFlow, DiffFile } from '../src/types';
 
 describe('RiskScorer', () => {
   let scorer: RiskScorer;
@@ -8,11 +8,20 @@ describe('RiskScorer', () => {
     scorer = new RiskScorer();
   });
 
-  const makeScenario = (feature: string, scenario: string, steps: string[] = []): BddScenario => ({
-    feature,
-    scenario,
-    steps: steps.map((s) => ({ keyword: 'When' as const, text: s })),
-  });
+  // Build a synthetic MaestroFlow whose YAML body carries the supplied step
+  // labels — RiskScorer scans both the scenario name and the YAML for critical
+  // keywords, so we mirror what a real flow would look like.
+  const makeScenario = (feature: string, scenario: string, steps: string[] = []): MaestroFlow => {
+    const body = ['- launchApp', ...steps.map((s) => `- tapOn: ${JSON.stringify(s)}`)].join('\n');
+    return {
+      feature,
+      scenario,
+      appId: 'com.example.app',
+      fileName: `${scenario.toLowerCase().replace(/\s+/g, '-')}.yaml`,
+      yaml: `appId: com.example.app\n---\n${body}\n`,
+      issues: [],
+    };
+  };
 
   const makeDiff = (
     path: string,

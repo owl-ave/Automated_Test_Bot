@@ -1,4 +1,4 @@
-import { BddScenario, DiffFile } from '../../types';
+import { MaestroFlow, DiffFile } from '../../types';
 import { Logger } from '../../utils/logger';
 
 interface SchedulerOptions {
@@ -19,7 +19,7 @@ export class TestScheduler {
     this.options = { failFast: true, platformSpecific: true, ...options };
   }
 
-  prioritize(scenarios: BddScenario[], scores: Map<string, number>, diffFiles?: DiffFile[]): BddScenario[] {
+  prioritize(scenarios: MaestroFlow[], scores: Map<string, number>, diffFiles?: DiffFile[]): MaestroFlow[] {
     let ordered = [...scenarios];
 
     if (this.options.platformSpecific && diffFiles) {
@@ -59,7 +59,7 @@ export class TestScheduler {
     return criticalFailure;
   }
 
-  private applyPlatformFilter(scenarios: BddScenario[], diffFiles: DiffFile[]): BddScenario[] {
+  private applyPlatformFilter(scenarios: MaestroFlow[], diffFiles: DiffFile[]): MaestroFlow[] {
     const platform = this.detectPlatformFocus(diffFiles);
     if (!platform) return scenarios;
 
@@ -67,8 +67,8 @@ export class TestScheduler {
 
     const deprioritizedPlatform = platform === 'android' ? 'ios' : 'android';
 
-    const primary: BddScenario[] = [];
-    const deprioritized: BddScenario[] = [];
+    const primary: MaestroFlow[] = [];
+    const deprioritized: MaestroFlow[] = [];
 
     for (const s of scenarios) {
       const text = `${s.feature} ${s.scenario}`.toLowerCase();

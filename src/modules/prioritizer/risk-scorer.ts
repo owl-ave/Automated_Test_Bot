@@ -1,4 +1,4 @@
-import { BddScenario, DiffFile } from '../../types';
+import { MaestroFlow, DiffFile } from '../../types';
 import { Logger } from '../../utils/logger';
 
 export interface HistoricalTestRun {
@@ -28,8 +28,8 @@ const HIGH_RISK_EXTENSIONS = ['.kt', '.swift', '.java', '.m', '.mm', '.dart'];
 export class RiskScorer {
   private logger = new Logger('RiskScorer');
 
-  scoreTest(scenario: BddScenario, diffFiles: DiffFile[], historicalData?: HistoricalTestRun[]): number {
-    const factors = this.computeFactors(scenario, diffFiles, historicalData);
+  scoreTest(flow: MaestroFlow, diffFiles: DiffFile[], historicalData?: HistoricalTestRun[]): number {
+    const factors = this.computeFactors(flow, diffFiles, historicalData);
     const raw =
       factors.changeSize * WEIGHT_CHANGE_SIZE +
       factors.historicalFailureRate * WEIGHT_HISTORICAL_FAILURE +
@@ -38,19 +38,19 @@ export class RiskScorer {
       factors.recency * WEIGHT_RECENCY;
 
     const score = Math.round(Math.min(100, Math.max(0, raw)));
-    this.logger.debug(`Score for "${scenario.scenario}": ${score}`, factors);
+    this.logger.debug(`Score for "${flow.scenario}": ${score}`, factors);
     return score;
   }
 
   private computeFactors(
-    scenario: BddScenario,
+    flow: MaestroFlow,
     diffFiles: DiffFile[],
     historicalData?: HistoricalTestRun[],
   ): RiskFactors {
     return {
       changeSize: this.computeChangeSizeRisk(diffFiles),
-      historicalFailureRate: this.computeHistoricalRisk(scenario.scenario, historicalData),
-      flowCriticality: this.computeFlowCriticality(scenario),
+      historicalFailureRate: this.computeHistoricalRisk(flow.scenario, historicalData),
+      flowCriticality: this.computeFlowCriticality(flow),
       platformRisk: this.computePlatformRisk(diffFiles),
       recency: this.computeRecencyRisk(diffFiles),
     };
@@ -73,19 +73,17 @@ export class RiskScorer {
     return Math.round((failures / relevant.length) * 100);
   }
 
-  private computeFlowCriticality(scenario: BddScenario): number {
-    const text = `${scenario.feature} ${scenario.scenario}`.toLowerCase();
+  private computeFlowCriticality(flow: MaestroFlow): number {
+    const text = `${flow.feature} ${flow.scenario}`.toLowerCase();
     const matchCount = CRITICAL_KEYWORDS.filter((kw) => text.includes(kw)).length;
     if (matchCount >= 3) return 100;
     if (matchCount >= 2) return 80;
     if (matchCount >= 1) return 60;
 
-    const stepText = scenario.steps
-      .map((s) => s.text)
-      .join(' ')
-      .toLowerCase();
-    const stepMatches = CRITICAL_KEYWORDS.filter((kw) => stepText.includes(kw)).length;
-    if (stepMatches >= 1) return 50;
+    // Fall back to scanning the YAML body — visible labels in the flow
+    // (e.g. "Sign in", "Pay", "Checkout") still carry the criticality signal.
+    const yamlMatches = CRITICAL_KEYWORDS.filter((kw) => flow.yaml.toLowerCase().includes(kw)).length;
+    if (yamlMatches >= 1) return 50;
 
     return 20;
   }

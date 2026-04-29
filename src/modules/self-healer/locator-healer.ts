@@ -1,9 +1,9 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { Logger } from '../../utils/logger';
 import {
-  tryAccessibilityId as tryAccessibilityIdFn,
-  tryResourceId as tryResourceIdFn,
   tryTextMatch as tryTextMatchFn,
+  tryUserVisibleLabel as tryUserVisibleLabelFn,
+  tryInternalIdentifier as tryInternalIdentifierFn,
   tryXPath as tryXPathFn,
   HeuristicResult,
 } from './heuristics';
@@ -52,23 +52,18 @@ export class LocatorHealer {
   async healLocator(originalLocator: LocatorStrategy, pageSource: string, platform?: 'android' | 'ios'): Promise<HealResult> {
     logger.log('Healing broken locator', { strategy: originalLocator.strategy, value: originalLocator.value, platform });
 
-    // Run ALL heuristic strategies, collect healed results, pick the single highest-confidence
-    // candidate. AI fallback only runs if no heuristic candidate clears the acceptance bar
-    // (it's expensive + can hallucinate). Confidence is derived from the strategy + match
-    // quality; there is no arbitrary floor.
-    const heuristicTasks: Array<() => Promise<HealResult> | HealResult> =
-      platform === 'ios'
-        ? [
-            () => this.tryAccessibilityId(originalLocator, pageSource),
-            () => this.tryTextMatch(originalLocator, pageSource),
-            () => this.tryXPath(originalLocator, pageSource),
-          ]
-        : [
-            () => this.tryAccessibilityId(originalLocator, pageSource),
-            () => this.tryResourceId(originalLocator, pageSource),
-            () => this.tryTextMatch(originalLocator, pageSource),
-            () => this.tryXPath(originalLocator, pageSource),
-          ];
+    // Run ALL heuristic strategies in user-perspective order — visible text first,
+    // then user-visible label (TalkBack/VoiceOver), then internal identifiers as
+    // a low-confidence fallback. The reducer picks the single highest-confidence
+    // candidate, so the rebalanced confidence ranges in heuristics.ts naturally
+    // make text/label win every tie. AI fallback only runs if nothing clears
+    // MIN_ACCEPT_CONFIDENCE.
+    const heuristicTasks: Array<() => Promise<HealResult> | HealResult> = [
+      () => this.tryTextMatch(originalLocator, pageSource),
+      () => this.tryUserVisibleLabel(originalLocator, pageSource),
+      () => this.tryInternalIdentifier(originalLocator, pageSource),
+      () => this.tryXPath(originalLocator, pageSource),
+    ];
 
     const heuristicResults = await Promise.all(heuristicTasks.map((fn) => Promise.resolve(fn())));
     const heuristicHealed = heuristicResults.filter((r) => r.healed);
@@ -105,16 +100,16 @@ export class LocatorHealer {
     };
   }
 
-  private tryAccessibilityId(original: LocatorStrategy, pageSource: string): HealResult {
-    return toHealResult(tryAccessibilityIdFn(original.value, pageSource));
-  }
-
-  private tryResourceId(original: LocatorStrategy, pageSource: string): HealResult {
-    return toHealResult(tryResourceIdFn(original.value, pageSource));
-  }
-
   private tryTextMatch(original: LocatorStrategy, pageSource: string): HealResult {
     return toHealResult(tryTextMatchFn(original.value, pageSource));
+  }
+
+  private tryUserVisibleLabel(original: LocatorStrategy, pageSource: string): HealResult {
+    return toHealResult(tryUserVisibleLabelFn(original.value, pageSource));
+  }
+
+  private tryInternalIdentifier(original: LocatorStrategy, pageSource: string): HealResult {
+    return toHealResult(tryInternalIdentifierFn(original.value, pageSource));
   }
 
   private tryXPath(original: LocatorStrategy, pageSource: string): HealResult {

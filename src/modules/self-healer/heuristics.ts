@@ -75,50 +75,68 @@ export function findBestMatch(target: string, candidates: string[]): MatchScore 
   return bestMatch.score > 0 ? bestMatch : null;
 }
 
-export function tryAccessibilityId(targetValue: string, pageSource: string): HeuristicResult {
-  const ids = extractAttributes(pageSource, ['content-desc', 'accessibility-id', 'label', 'name']);
-  const match = findBestMatch(targetValue, ids);
-  if (match && match.score >= 0.5) {
-    return {
-      matched: true,
-      strategy: 'accessibility id',
-      value: match.value,
-      confidence: Math.round(55 + match.score * 40),
-      method: 'accessibility-id',
-    };
-  }
-  return { ...NO_MATCH, method: 'accessibility-id' };
-}
-
-export function tryResourceId(targetValue: string, pageSource: string): HeuristicResult {
-  const ids = extractAttributes(pageSource, ['resource-id', 'id']);
-  const match = findBestMatch(targetValue, ids);
-  if (match && match.score >= 0.5) {
-    return {
-      matched: true,
-      strategy: 'id',
-      value: match.value,
-      confidence: Math.round(50 + match.score * 40),
-      method: 'resource-id',
-    };
-  }
-  return { ...NO_MATCH, method: 'resource-id' };
-}
+// End-user-perspective locator strategies. Confidence ranges are deliberately
+// stratified so that text and accessibility-label matches always outrank
+// internal-identifier matches on a tie:
+//
+//   tryTextMatch          → 70–100   (visible text the user reads)
+//   tryUserVisibleLabel   → 60–90    (label/name/content-desc — what TalkBack
+//                                     and VoiceOver announce to the user)
+//   tryInternalIdentifier → 30–55    (resource-id, iOS accessibility-identifier
+//                                     and bare id — internal developer signals)
+//   tryXPath              → flat 50  (class+text fallback)
+//
+// `MIN_ACCEPT_CONFIDENCE` in locator-healer.ts is 50, so an internal-identifier
+// match still squeaks through when nothing else fires, but loses every tie to
+// a text/label match.
 
 export function tryTextMatch(targetValue: string, pageSource: string): HeuristicResult {
-  const texts = extractAttributes(pageSource, ['text', 'value', 'label']);
+  const texts = extractAttributes(pageSource, ['text', 'value']);
   const match = findBestMatch(targetValue, texts);
-  if (match && match.score >= 0.6) {
-    const xpath = `//*[contains(@text,"${escapeXPath(match.value)}") or contains(@label,"${escapeXPath(match.value)}")]`;
+  if (match && match.score >= 0.5) {
+    const xpath = `//*[contains(@text,"${escapeXPath(match.value)}") or contains(@value,"${escapeXPath(match.value)}")]`;
     return {
       matched: true,
       strategy: 'xpath',
       value: xpath,
-      confidence: Math.round(40 + match.score * 35),
+      confidence: Math.round(70 + match.score * 30),
       method: 'text-match',
     };
   }
   return { ...NO_MATCH, method: 'text-match' };
+}
+
+export function tryUserVisibleLabel(targetValue: string, pageSource: string): HeuristicResult {
+  const labels = extractAttributes(pageSource, ['label', 'name', 'content-desc']);
+  const match = findBestMatch(targetValue, labels);
+  if (match && match.score >= 0.5) {
+    const xpath = `//*[contains(@label,"${escapeXPath(match.value)}") or contains(@name,"${escapeXPath(match.value)}") or contains(@content-desc,"${escapeXPath(match.value)}")]`;
+    return {
+      matched: true,
+      strategy: 'xpath',
+      value: xpath,
+      confidence: Math.round(60 + match.score * 30),
+      method: 'user-visible-label',
+    };
+  }
+  return { ...NO_MATCH, method: 'user-visible-label' };
+}
+
+export function tryInternalIdentifier(targetValue: string, pageSource: string): HeuristicResult {
+  const ids = extractAttributes(pageSource, ['resource-id', 'accessibility-id', 'id']);
+  const match = findBestMatch(targetValue, ids);
+  // Stricter threshold (0.7) prevents fuzzy noise like `loginBtn` ↔ `login_button`
+  // from beating an exact label match elsewhere.
+  if (match && match.score >= 0.7) {
+    return {
+      matched: true,
+      strategy: 'id',
+      value: match.value,
+      confidence: Math.round(30 + match.score * 25),
+      method: 'internal-identifier',
+    };
+  }
+  return { ...NO_MATCH, method: 'internal-identifier' };
 }
 
 export function tryXPath(targetValue: string, pageSource: string): HeuristicResult {
@@ -145,7 +163,7 @@ export function tryXPath(targetValue: string, pageSource: string): HeuristicResu
           matched: true,
           strategy: 'xpath',
           value: xpath,
-          confidence: 60,
+          confidence: 50,
           method: 'xpath-class',
         };
       }

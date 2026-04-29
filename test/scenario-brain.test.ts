@@ -1,68 +1,91 @@
-/**
- * Tests for the getElementIdRules helper and platform-specific prompt generation
- * in the ScenarioBrain module.
- *
- * We import the function indirectly by testing the prompt output,
- * since getElementIdRules is not exported. We test via the prompt template instead.
- */
-import { getFeatureGenerationPrompt } from '../src/ai/prompts/feature-generation';
+import { getMaestroFlowPrompt, getMaestroDiffPrompt } from '../src/ai/prompts/feature-generation';
+import { MaestroAuthor } from '../src/modules/scenario-brain/feature-generator';
 
-describe('Feature Generation Prompt', () => {
-  it('includes React Native element ID guidance', () => {
-    const prompt = getFeatureGenerationPrompt('e-commerce', 'Checkout', ['Cart', 'Payment'], 'react-native');
-    expect(prompt).toContain('testID');
-    expect(prompt).toContain('react-native');
-    expect(prompt).toContain('e-commerce');
+describe('Maestro flow generation prompt', () => {
+  it('lists supported Maestro commands and never mentions Gherkin keywords', () => {
+    const prompt = getMaestroFlowPrompt({
+      industry: 'fintech',
+      flowName: 'Login',
+      screenNames: ['Login'],
+      framework: 'react-native',
+      screens: [
+        {
+          name: 'Login',
+          elements: [
+            { id: 'sign-in', type: 'button', text: 'Sign In' },
+            { id: 'email', type: 'textfield', text: 'Email' },
+          ],
+        },
+      ],
+      appId: 'com.example.app',
+    });
+    expect(prompt).toContain('launchApp');
+    expect(prompt).toContain('tapOn');
+    expect(prompt).toContain('assertVisible');
+    expect(prompt).toContain('com.example.app');
+    expect(prompt).toContain('Sign In');
+    // We migrated off Gherkin — the prompt MUST NOT reference the old DSL.
+    expect(prompt).not.toMatch(/\bGiven\b/);
+    expect(prompt).not.toMatch(/\bWhen user taps on\b/);
   });
 
-  it('includes Swift/iOS element ID guidance', () => {
-    const prompt = getFeatureGenerationPrompt('banking', 'Login', ['LoginScreen'], 'swift');
-    expect(prompt).toContain('accessibilityIdentifier');
-    expect(prompt).toContain('accessibilityLabel');
-    expect(prompt).toContain('SwiftUI');
-    expect(prompt).toContain('(swift)');
+  it('diff-mode prompt includes the visible vocab from the codebase', () => {
+    const prompt = getMaestroDiffPrompt({
+      industry: 'social',
+      framework: 'kotlin',
+      diffSummary: 'modified ProfileScreen.kt\n+ added avatar upload',
+      appId: 'com.example.social',
+      vocab: [{ id: 'avatar', type: 'button', text: 'Upload avatar' }],
+    });
+    expect(prompt).toContain('Upload avatar');
+    expect(prompt).toContain('avatar upload');
+    expect(prompt).toContain('com.example.social');
+  });
+});
+
+describe('MaestroAuthor.parseFlowsJson', () => {
+  const author = new MaestroAuthor();
+
+  it('hydrates a valid JSON array of flows into MaestroFlow objects', () => {
+    const response = JSON.stringify([
+      {
+        feature: 'Auth',
+        scenario: 'User signs in',
+        yaml: '- launchApp\n- tapOn: "Email"\n- inputText: "user@example.com"\n- tapOn: "Sign in"\n- assertVisible: "Welcome"',
+      },
+    ]);
+    const flows = author.parseFlowsJson(response, 'PR Changes', 'com.example.app');
+    expect(flows).toHaveLength(1);
+    expect(flows[0].scenario).toBe('User signs in');
+    expect(flows[0].fileName).toBe('user-signs-in.yaml');
+    expect(flows[0].yaml).toContain('appId: "com.example.app"');
+    expect(flows[0].yaml).toContain('---');
+    expect(flows[0].yaml).toContain('- launchApp');
   });
 
-  it('includes Kotlin/Android element ID guidance', () => {
-    const prompt = getFeatureGenerationPrompt('social', 'Feed', ['FeedScreen'], 'kotlin');
-    expect(prompt).toContain('resource-id');
-    expect(prompt).toContain('contentDescription');
-    expect(prompt).toContain('testTag');
-    expect(prompt).toContain('Jetpack Compose');
-    expect(prompt).toContain('(kotlin)');
+  it('strips markdown code fences and trailing prose around the JSON array', () => {
+    const response =
+      'Here you go:\n```json\n' +
+      JSON.stringify([{ feature: 'Auth', scenario: 'sign in', yaml: '- launchApp\n- assertVisible: "Hi"' }]) +
+      '\n```\nDone.';
+    const flows = author.parseFlowsJson(response, 'fallback', 'com.example.app');
+    expect(flows).toHaveLength(1);
+    expect(flows[0].yaml.startsWith('appId: ')).toBe(true);
   });
 
-  it('includes Flutter element ID guidance', () => {
-    const prompt = getFeatureGenerationPrompt('health', 'Dashboard', ['HomeScreen'], 'flutter');
-    expect(prompt).toContain('Key');
-    expect(prompt).toContain('Semantics');
-    expect(prompt).toContain('(flutter)');
+  it('drops malformed items but keeps valid ones', () => {
+    const response = JSON.stringify([
+      { feature: 'A', scenario: 'good', yaml: '- launchApp\n- assertVisible: "x"' },
+      { scenario: 'no yaml' },
+      'not an object',
+    ]);
+    const flows = author.parseFlowsJson(response, 'fallback', 'com.example.app');
+    expect(flows).toHaveLength(1);
+    expect(flows[0].scenario).toBe('good');
   });
 
-  it('uses generic guidance for native/unknown framework', () => {
-    const prompt = getFeatureGenerationPrompt('generic', 'Main', ['MainScreen'], 'native');
-    expect(prompt).toContain('accessibility IDs');
-    expect(prompt).not.toContain('(native)');
-  });
-
-  it('uses generic guidance when framework is undefined', () => {
-    const prompt = getFeatureGenerationPrompt('generic', 'Main', ['MainScreen']);
-    expect(prompt).toContain('accessibility IDs');
-  });
-
-  it('includes Appium Gherkin syntax rules regardless of framework', () => {
-    const frameworks = ['react-native', 'swift', 'kotlin', 'flutter', 'native', undefined];
-    for (const fw of frameworks) {
-      const prompt = getFeatureGenerationPrompt('generic', 'Flow', ['Screen'], fw);
-      expect(prompt).toContain('TAP:');
-      expect(prompt).toContain('TYPE:');
-      expect(prompt).toContain('ASSERT VISIBLE:');
-      expect(prompt).toContain('ASSERT TEXT:');
-    }
-  });
-
-  it('includes screen names in the prompt', () => {
-    const prompt = getFeatureGenerationPrompt('e-commerce', 'Checkout', ['CartScreen', 'PaymentScreen', 'ConfirmScreen'], 'react-native');
-    expect(prompt).toContain('CartScreen → PaymentScreen → ConfirmScreen');
+  it('returns [] when the response has no JSON array', () => {
+    const flows = author.parseFlowsJson('I cannot help with that.', 'fallback', 'com.example.app');
+    expect(flows).toEqual([]);
   });
 });

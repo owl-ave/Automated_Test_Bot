@@ -12,6 +12,29 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 import express from 'express';
 import axios from 'axios';
+import jwt from 'jsonwebtoken';
+
+async function mintInstallationToken(appId: string, privateKey: string, installationId?: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const jwtToken = jwt.sign(
+    { iat: now - 60, exp: now + 9 * 60, iss: appId },
+    privateKey,
+    { algorithm: 'RS256' },
+  );
+  const ghHeaders = { Authorization: `Bearer ${jwtToken}`, Accept: 'application/vnd.github+json' };
+
+  if (!installationId) {
+    const { data } = await axios.get('https://api.github.com/app/installations', { headers: ghHeaders });
+    if (!data.length) throw new Error('No GitHub App installations found');
+    installationId = String(data[0].id);
+  }
+  const { data } = await axios.post(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {},
+    { headers: ghHeaders },
+  );
+  return data.token;
+}
 
 const app = express();
 const PORT = parseInt(process.env.DASHBOARD_PORT || '3333', 10);
@@ -20,11 +43,52 @@ const WORKFLOW_FILE = 'test-bot.yml';
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', express.json());
+app.use('/api', (req, _res, next) => {
+  const t0 = Date.now();
+  const orig = _res.end.bind(_res);
+  (_res as any).end = (...args: any[]) => {
+    console.log(`[${new Date().toISOString().slice(11, 19)}] ${req.method} ${req.originalUrl} ${_res.statusCode} ${Date.now() - t0}ms`);
+    return (orig as any)(...args);
+  };
+  next();
+});
 
-function getToken(): string {
+function resolveAppPrivateKey(): string | null {
+  const b64 = process.env.APP_PRIVATE_KEY_B64 || process.env.GITHUB_APP_PRIVATE_KEY_B64;
+  if (b64) return Buffer.from(b64, 'base64').toString('utf8');
+  const raw = process.env.GITHUB_APP_PRIVATE_KEY;
+  if (raw) return raw.replace(/\\n/g, '\n');
+  return null;
+}
+
+let cachedToken: string | null = null;
+let cachedTokenExpiresAt = 0;
+
+async function getToken(): Promise<string> {
   const pat = process.env.GITHUB_PAT || process.env.GITHUB_TOKEN;
-  if (!pat) throw new Error('GITHUB_PAT or GITHUB_TOKEN not set');
-  return pat;
+  if (pat) return pat;
+
+  const appId = process.env.APP_ID || process.env.GITHUB_APP_ID;
+  const privateKey = resolveAppPrivateKey();
+  const installationId = process.env.APP_INSTALLATION_ID || process.env.GITHUB_APP_INSTALLATION_ID;
+
+  if (!appId || !privateKey) {
+    throw new Error('No GitHub auth: set GITHUB_TOKEN, or APP_ID + APP_PRIVATE_KEY_B64');
+  }
+
+  const now = Date.now();
+  if (cachedToken && now < cachedTokenExpiresAt) return cachedToken;
+
+  const token = await mintInstallationToken(appId, privateKey, installationId);
+  cachedToken = token;
+  cachedTokenExpiresAt = now + 55 * 60 * 1000;
+  return token;
+}
+
+function authMode(): string {
+  if (process.env.GITHUB_PAT || process.env.GITHUB_TOKEN) return 'PAT ✓';
+  if ((process.env.APP_ID || process.env.GITHUB_APP_ID) && resolveAppPrivateKey()) return 'GitHub App ✓';
+  return 'NOT SET ✗';
 }
 
 const gh = (token: string) => ({
@@ -36,11 +100,13 @@ const gh = (token: string) => ({
 // GET /api/repos
 app.get('/api/repos', async (_req, res) => {
   try {
-    const { data } = await axios.get(
-      'https://api.github.com/user/repos?per_page=100&sort=updated',
-      { headers: gh(getToken()) }
-    );
-    res.json(data.map((r: any) => ({
+    const isApp = !(process.env.GITHUB_PAT || process.env.GITHUB_TOKEN);
+    const url = isApp
+      ? 'https://api.github.com/installation/repositories?per_page=100'
+      : 'https://api.github.com/user/repos?per_page=100&sort=updated';
+    const { data } = await axios.get(url, { headers: gh(await getToken()) });
+    const list = isApp ? (data.repositories || []) : data;
+    res.json(list.map((r: any) => ({
       fullName: r.full_name,
       owner: r.owner.login,
       name: r.name,
@@ -59,7 +125,7 @@ app.get('/api/pulls', async (req, res) => {
   try {
     const { data } = await axios.get(
       `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=50`,
-      { headers: gh(getToken()) }
+      { headers: gh(await getToken()) }
     );
     res.json(data.map((pr: any) => ({
       number: pr.number,
@@ -83,6 +149,13 @@ app.post('/api/trigger', async (req, res) => {
   const targetBranch = branch || 'main';
 
   try {
+    const token = await getToken();
+    const runsUrl = `https://api.github.com/repos/${botOwner}/${botRepo}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=1`;
+
+    // Capture the latest run ID before dispatch so we can detect the new one
+    const before = await axios.get(runsUrl, { headers: gh(token) });
+    const beforeId = Number(before.data.workflow_runs?.[0]?.id || 0);
+
     await axios.post(
       `https://api.github.com/repos/${botOwner}/${botRepo}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
       {
@@ -93,11 +166,24 @@ app.post('/api/trigger', async (req, res) => {
           branch: targetBranch,
         },
       },
-      { headers: gh(getToken()) }
+      { headers: gh(token) }
     );
+
+    // Poll for the newly created run (typically appears within 1-3s)
+    let runId: string | null = null;
+    for (let i = 0; i < 15; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const after = await axios.get(runsUrl, { headers: gh(token) });
+      const latest = after.data.workflow_runs?.[0];
+      if (latest && Number(latest.id) > beforeId) {
+        runId = String(latest.id);
+        break;
+      }
+    }
 
     res.json({
       status: 'triggered',
+      runId,
       message: `Workflow dispatched for ${targetRepo}${prNumber ? ' PR #' + prNumber : ''}`,
     });
   } catch (err: any) {
@@ -111,10 +197,10 @@ app.get('/api/runs', async (_req, res) => {
   try {
     const { data } = await axios.get(
       `https://api.github.com/repos/${botOwner}/${botRepo}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=50`,
-      { headers: gh(getToken()) }
+      { headers: gh(await getToken()) }
     );
 
-    const token = getToken();
+    const token = await getToken();
     const runs = await Promise.all((data.workflow_runs || []).map(async (r: any) => {
       const parsed = parseDisplayTitle(r.display_title || '');
       let repo = r.inputs?.repo || parsed.repo;
@@ -224,7 +310,7 @@ app.get('/api/runs/:id', async (req, res) => {
   try {
     const { data: r } = await axios.get(
       `https://api.github.com/repos/${botOwner}/${botRepo}/actions/runs/${req.params.id}`,
-      { headers: gh(getToken()) }
+      { headers: gh(await getToken()) }
     );
     res.json({
       id: String(r.id),
@@ -245,7 +331,7 @@ app.get('/api/runs/:id', async (req, res) => {
 // GET /api/runs/:id/logs — fetch job logs from GitHub Actions
 app.get('/api/runs/:id/logs', async (req, res) => {
   const [botOwner, botRepo] = BOT_REPO.split('/');
-  const token = getToken();
+  const token = await getToken();
 
   try {
     // Get run status
@@ -261,28 +347,34 @@ app.get('/api/runs/:id/logs', async (req, res) => {
     );
 
     const logs: string[] = [];
+    const jobs = jobsData.jobs || [];
 
-    for (const job of (jobsData.jobs || [])) {
+    // Fetch all job logs in parallel with a 3s timeout each
+    const jobLogResults = await Promise.all(jobs.map(async (job: any) => {
+      try {
+        const logRes = await axios.get(
+          `https://api.github.com/repos/${botOwner}/${botRepo}/actions/jobs/${job.id}/logs`,
+          { headers: gh(token), maxRedirects: 5, responseType: 'text', timeout: 3000 }
+        );
+        const lines = String(logRes.data).split('\n');
+        return { job, lines: lines.slice(-50), error: null };
+      } catch (e: any) {
+        return { job, lines: [] as string[], error: e.response?.status || e.code || 'error' };
+      }
+    }));
+
+    for (const { job, lines, error } of jobLogResults) {
       logs.push(`\n=== Job: ${job.name} [${job.status}${job.conclusion ? '/' + job.conclusion : ''}] ===`);
       for (const step of (job.steps || [])) {
         const icon = step.conclusion === 'success' ? '✓' : step.conclusion === 'failure' ? '✗' : '○';
         logs.push(`  ${icon} ${step.name}`);
       }
-
-      // Fetch raw logs for this job if completed
-      if (job.status === 'completed') {
-        try {
-          const logRes = await axios.get(
-            `https://api.github.com/repos/${botOwner}/${botRepo}/actions/jobs/${job.id}/logs`,
-            { headers: gh(token), maxRedirects: 5, responseType: 'text' }
-          );
-          // Trim to last 200 lines to avoid huge payloads
-          const lines = String(logRes.data).split('\n');
-          const trimmed = lines.slice(-200);
-          trimmed.forEach(l => logs.push(l));
-        } catch {
-          logs.push(`  [Logs not available yet]`);
-        }
+      if (lines.length) {
+        lines.forEach((l: string) => logs.push(l));
+      } else if (error) {
+        logs.push(job.status === 'completed'
+          ? `  [Logs unavailable: ${error}]`
+          : `  [Logs not yet available — runner is still warming up]`);
       }
     }
 
@@ -306,10 +398,10 @@ app.get('/api/branches', async (req, res) => {
   try {
     const { data } = await axios.get(
       `https://api.github.com/repos/${botOwner}/${botRepo}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=100`,
-      { headers: gh(getToken()) }
+      { headers: gh(await getToken()) }
     );
 
-    const token = getToken();
+    const token = await getToken();
     const allRuns = (await Promise.all((data.workflow_runs || []).map(async (r: any) => {
       const parsed = parseDisplayTitle(r.display_title || '');
       let repo = r.inputs?.repo || parsed.repo;
@@ -435,5 +527,5 @@ app.listen(PORT, () => {
   console.log(`\n  Dashboard: http://localhost:${PORT}`);
   console.log(`  Mode:      GITHUB ACTIONS (workflow_dispatch)`);
   console.log(`  Bot repo:  ${BOT_REPO}`);
-  console.log(`  Token:     ${(process.env.GITHUB_PAT || process.env.GITHUB_TOKEN) ? 'SET ✓' : 'NOT SET ✗'}\n`);
+  console.log(`  Auth:      ${authMode()}\n`);
 });

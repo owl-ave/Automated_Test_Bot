@@ -1,33 +1,18 @@
-import { PipelineContext, ModuleResult, BddScenario } from '../../types';
-import { FeatureGenerator } from './feature-generator';
-import { ClaudeClient } from '../../ai/claude-client';
+import { PipelineContext, ModuleResult, MaestroFlow } from '../../types';
+import { MaestroAuthor } from './feature-generator';
+import { resolveAppId } from '../test-writer/maestro-flow-generator';
 import { Logger } from '../../utils/logger';
 
 const LOGIN_KEYWORDS = ['log in', 'login', 'sign in', 'sign up', 'register', 'authenticate', 'otp', 'biometric'];
 
-function isLoginScenario(scenario: BddScenario): boolean {
-  const text = (scenario.scenario + ' ' + scenario.steps.map(s => s.text).join(' ')).toLowerCase();
-  return LOGIN_KEYWORDS.some(kw => text.includes(kw));
+function isLoginScenario(flow: MaestroFlow): boolean {
+  const text = (flow.feature + ' ' + flow.scenario + ' ' + flow.yaml).toLowerCase();
+  return LOGIN_KEYWORDS.some((kw) => text.includes(kw));
 }
 
-function filterAuthScenarios(scenarios: BddScenario[], authType: string | undefined): BddScenario[] {
-  if (!authType || authType === 'none') return scenarios.filter(s => !isLoginScenario(s));
-  return scenarios;
-}
-
-function getElementIdRules(framework: string): string {
-  switch (framework) {
-    case 'react-native':
-      return '- For React Native: use testID prop values (e.g., testID="login_button") or component text content';
-    case 'swift':
-      return '- For iOS/Swift: use accessibilityIdentifier values (preferred), accessibilityLabel, or visible button/label text\n- For SwiftUI: use .accessibilityIdentifier("id") values';
-    case 'kotlin':
-      return '- For Android/Kotlin: use android:id resource-id values (e.g., "login_button"), android:contentDescription, or visible text\n- For Jetpack Compose: use Modifier.testTag("tag") values';
-    case 'flutter':
-      return '- For Flutter: use Key values (e.g., Key("login_button")), Semantics labels, or visible text content';
-    default:
-      return '- Use accessibility IDs, resource-ids, or visible text content from the actual code';
-  }
+function filterAuthScenarios(flows: MaestroFlow[], authType: string | undefined): MaestroFlow[] {
+  if (!authType || authType === 'none') return flows.filter((f) => !isLoginScenario(f));
+  return flows;
 }
 
 export async function runScenarioBrain(context: PipelineContext): Promise<ModuleResult> {
@@ -38,84 +23,46 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
   }
 
   try {
-    const generator = new FeatureGenerator();
-
-    // If we have flows from screen detection, use them
-    if (context.codeAnalysis.criticalFlows.length > 0) {
-      const scenarios = await generator.generateFeatures(
-        context.codeAnalysis.industry,
-        context.codeAnalysis.criticalFlows,
-        context.codeAnalysis.framework,
-        context.codeAnalysis.screens,
-      );
-      context.scenariosBdd = filterAuthScenarios(scenarios, context.authConfig?.type);
-      logger.log('Feature generation complete (from flows)', { scenarios: context.scenariosBdd.length });
-      return { moduleName: 'ScenarioBrain', status: 'success', data: context.scenariosBdd };
+    // The bot needs at least one platform's appId to emit a runnable flow. We
+    // pick whichever platform AppBuilder produced — if both, prefer Android
+    // since RN/Flutter testIDs map to identical accessibility ids on iOS too.
+    const appIds = resolveAppId(context.codeAnalysis.framework, context.mobilePath);
+    const appId = appIds.android ?? appIds.ios;
+    if (!appId) {
+      return {
+        moduleName: 'ScenarioBrain',
+        status: 'error',
+        error:
+          'Could not resolve appId (Android applicationId or iOS CFBundleIdentifier) from source. ' +
+          'Set MAESTRO_ANDROID_APP_ID and/or MAESTRO_IOS_APP_ID env vars to override.',
+      };
     }
 
-    // Fallback: generate scenarios directly from PR diff using Claude
-    logger.log('No flows detected, generating scenarios from PR diff');
-    const claude = new ClaudeClient();
+    const author = new MaestroAuthor();
+    const inputs = {
+      industry: context.codeAnalysis.industry,
+      framework: context.codeAnalysis.framework,
+      screens: context.codeAnalysis.screens,
+      appId,
+    };
 
-    const diffSummary = context.diffFiles
-      .slice(0, 15) // limit to 15 files
-      .map(f => `${f.status} ${f.path}\n${f.patch?.slice(0, 500) || ''}`)
-      .join('\n---\n');
+    let flows: MaestroFlow[];
+    if (context.codeAnalysis.criticalFlows.length > 0) {
+      flows = await author.generateFromFlows(context.codeAnalysis.criticalFlows, inputs);
+      logger.log('Maestro flows generated (from critical flows)', { flows: flows.length });
+    } else {
+      const diffSummary = context.diffFiles
+        .slice(0, 15)
+        .map((f) => `${f.status} ${f.path}\n${f.patch?.slice(0, 500) || ''}`)
+        .join('\n---\n');
+      flows = await author.generateFromDiff(diffSummary, inputs);
+      logger.log('Maestro flows generated (from PR diff)', { flows: flows.length });
+    }
 
-    const framework = context.codeAnalysis.framework || 'native';
-    const prompt = `You are an expert Mobile QA Automation Engineer specializing in Appium and BDD Gherkin.
-Analyze this ${framework} mobile app PR diff and generate executable test scenarios.
-
-The app framework is: ${framework}
-Industry: ${context.codeAnalysis.industry || 'generic'}
-
-PR changes:
-${diffSummary}
-
-## CRITICAL: Appium-Executable Step Syntax
-Every step MUST use one of these exact patterns so the Appium automation parser can execute them.
-Do NOT write descriptive/abstract steps like "the app is installed" or "the device is in dark mode" — those CANNOT be automated.
-
-Allowed step formats:
-- TAP: \`When user taps on "<elementId>"\`
-- TYPE: \`And user types "<value>" in "<elementId>"\`
-- SCROLL: \`And user scrolls <up/down>\`
-- SWIPE: \`And user swipes <left/right>\`
-- WAIT: \`And user waits for "<elementId>"\`
-- ASSERT VISIBLE: \`Then user should see "<elementId>"\`
-- ASSERT TEXT: \`Then text shows "<expectedText>"\`
-- BACK: \`And user goes back\`
-- LAUNCH (implicit): \`Given the app is launched\` (this is the ONLY valid Given step)
-
-## Element ID Rules
-- Use realistic element IDs based on the actual code — never invent abstract IDs like "safe_area_bounds"
-${getElementIdRules(framework)}
-
-## Example
-Scenario: App renders main screen
-  Given the app is launched
-  And user waits for "main_screen"
-  Then user should see "main_screen"
-  And text shows "Welcome"
-
-Scenario: User navigates back from settings
-  Given the app is launched
-  And user taps on "settings_button"
-  And user waits for "settings_screen"
-  And user goes back
-  Then user should see "main_screen"
-
-Generate 3-8 scenarios that test the CHANGED functionality. Focus on user-visible behavior.
-Only output valid Gherkin using the step formats above. No explanations.`;
-
-    const response = await claude.prompt(prompt);
-    const scenarios = generator.parseResponse(response);
-
-    context.scenariosBdd = filterAuthScenarios(scenarios, context.authConfig?.type);
-    logger.log('Feature generation complete (from diff)', { scenarios: context.scenariosBdd.length });
-    return { moduleName: 'ScenarioBrain', status: 'success', data: context.scenariosBdd };
+    context.maestroFlows = filterAuthScenarios(flows, context.authConfig?.type);
+    return { moduleName: 'ScenarioBrain', status: 'success', data: context.maestroFlows };
   } catch (error) {
-    logger.error('Feature generation failed', error);
+    logger.error('Maestro flow generation failed', error);
     return { moduleName: 'ScenarioBrain', status: 'error', error: String(error) };
   }
 }

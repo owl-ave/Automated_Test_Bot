@@ -1,0 +1,275 @@
+import * as yaml from 'js-yaml';
+import { CodeAnalysis, Element, MaestroFlow, MaestroValidationIssue } from '../../types';
+import { findBestMatch } from '../self-healer/heuristics';
+
+// Twelve checks for common AI-agent mistakes when generating Maestro flows.
+// Errors block submission to BrowserStack (would burn quota for nothing);
+// warnings ride along on the flow object and surface in the PR comment.
+//
+// Lenient mode (env MAESTRO_VALIDATOR_LENIENT=true) demotes errors to warnings
+// so a temporarily out-of-sync source scan doesn't block a PR — useful when
+// repo-scanner.ts misses a label that genuinely exists in the running app.
+
+const SUPPORTED_COMMANDS = new Set([
+  'launchApp',
+  'tapOn',
+  'inputText',
+  'assertVisible',
+  'assertNotVisible',
+  'extendedWaitUntil',
+  'swipe',
+  'scroll',
+  'scrollUntilVisible',
+  'back',
+  'takeScreenshot',
+  'pressKey',
+  'hideKeyboard',
+  'eraseText',
+  'waitForAnimationToEnd',
+]);
+
+const MAX_REPEAT_TIMES = 20;
+const FUZZY_VOCAB_THRESHOLD = 0.6;
+
+const TEST_DOMAINS = [/example\.com$/i, /test\.com$/i, /test\.dev$/i, /localhost$/i, /\.test$/i];
+const REAL_PHONE_RE = /\b(?:\+?\d{1,3}[-.\s]?)?(?!555[-.\s]?01\d{2})\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/;
+const CREDIT_CARD_RE = /\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b/;
+
+export interface ValidatorContext {
+  codeAnalysis: CodeAnalysis;
+  expectedAppIds: { android?: string; ios?: string };
+  lenient?: boolean;
+}
+
+export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): MaestroValidationIssue[] {
+  const lenient = ctx.lenient ?? process.env.MAESTRO_VALIDATOR_LENIENT === 'true';
+  const issues: MaestroValidationIssue[] = [];
+
+  let parsed: unknown;
+  try {
+    parsed = yaml.loadAll(flow.yaml);
+  } catch (err) {
+    issues.push({ severity: 'error', check: 'yaml-schema', message: `YAML parse failed: ${(err as Error).message}` });
+    return issues;
+  }
+
+  const docs = Array.isArray(parsed) ? parsed : [];
+  const config = (docs[0] as Record<string, unknown>) || {};
+  const commands = (docs[1] as unknown[]) || [];
+
+  // 3. Wrong / missing appId
+  const appId = config.appId;
+  if (typeof appId !== 'string' || !appId) {
+    issues.push({ severity: 'error', check: 'app-id', message: 'Flow is missing `appId` in its config block' });
+  } else if (
+    ctx.expectedAppIds.android &&
+    ctx.expectedAppIds.ios &&
+    appId !== ctx.expectedAppIds.android &&
+    appId !== ctx.expectedAppIds.ios
+  ) {
+    issues.push({
+      severity: 'error',
+      check: 'app-id',
+      message: `Flow appId "${appId}" does not match build appIds (android=${ctx.expectedAppIds.android}, ios=${ctx.expectedAppIds.ios})`,
+    });
+  }
+
+  // 10. YAML schema violation already handled above; further checks need an array.
+  if (!Array.isArray(commands)) {
+    issues.push({ severity: 'error', check: 'yaml-schema', message: 'Flow body must be a YAML sequence (list of commands)' });
+    return issues;
+  }
+
+  // 2. Missing launchApp at flow start
+  const first = commands[0];
+  const isLaunch = first === 'launchApp' || (typeof first === 'object' && first !== null && 'launchApp' in (first as object));
+  if (!isLaunch) {
+    issues.push({ severity: 'error', check: 'launch-app', message: 'First command must be `launchApp`' });
+  }
+
+  // 12. Empty flow (after launchApp)
+  if (commands.length < 3) {
+    issues.push({
+      severity: 'error',
+      check: 'empty-flow',
+      message: `Flow has only ${commands.length} command(s); needs at least 3 (launchApp + 1 action + 1 assertion)`,
+    });
+  }
+
+  // Walk commands to gather more checks
+  let assertionCount = 0;
+  const tapTargets: string[] = [];
+  for (const cmd of commands) {
+    const { name, payload } = decodeCommand(cmd);
+    if (!name) continue;
+
+    // 11. Unsupported command
+    if (!SUPPORTED_COMMANDS.has(name)) {
+      issues.push({
+        severity: 'error',
+        check: 'unsupported-command',
+        message: `Unsupported Maestro command "${name}" — likely a hallucinated keyword`,
+      });
+      continue;
+    }
+
+    if (name === 'assertVisible' || name === 'assertNotVisible') assertionCount++;
+
+    // 5. Unbounded repeat
+    if (name === 'repeat') {
+      const times = (payload as { times?: unknown })?.times;
+      if (typeof times !== 'number' || times <= 0 || times > MAX_REPEAT_TIMES) {
+        issues.push({
+          severity: 'error',
+          check: 'repeat-bounds',
+          message: `repeat.times must be a positive integer ≤ ${MAX_REPEAT_TIMES} (got ${String(times)})`,
+        });
+      }
+    }
+
+    // 6. Hardcoded PII / credentials in inputText
+    if (name === 'inputText' && typeof payload === 'string') {
+      const t = payload;
+      const emailMatch = t.match(/[\w.+-]+@([\w-]+\.[\w.-]+)/);
+      if (emailMatch && !TEST_DOMAINS.some((re) => re.test(emailMatch[1]))) {
+        issues.push({
+          severity: 'error',
+          check: 'pii-email',
+          message: `inputText contains non-test email "${emailMatch[0]}" — use @example.com / @test.com domains`,
+        });
+      }
+      if (REAL_PHONE_RE.test(t) && !/(?:0{4}|1{4}|5{4})/.test(t)) {
+        issues.push({
+          severity: 'warn',
+          check: 'pii-phone',
+          message: 'inputText looks like a real phone number — prefer 555-01XX test ranges',
+        });
+      }
+      if (CREDIT_CARD_RE.test(t)) {
+        issues.push({
+          severity: 'error',
+          check: 'pii-card',
+          message: 'inputText contains a credit-card-shaped value — never bake real PANs into tests',
+        });
+      }
+    }
+
+    // Track tap targets for ambiguity check (#7) and hallucination check (#1)
+    if (name === 'tapOn') {
+      const label = extractLabel(payload);
+      if (label) tapTargets.push(label);
+    }
+  }
+
+  // 4. No assertions at all
+  if (assertionCount === 0) {
+    issues.push({
+      severity: 'error',
+      check: 'missing-assertion',
+      message: 'Flow has no assertVisible/assertNotVisible — cannot verify outcome, false-pass risk',
+    });
+  }
+
+  // 1. Hallucinated labels — every tapOn / assertVisible string must fuzzy-match
+  // an entry in the offline element vocabulary.
+  const vocab = collectVocab(ctx.codeAnalysis);
+  const allLabels = [...tapTargets];
+  for (const cmd of commands) {
+    const { name, payload } = decodeCommand(cmd);
+    if (name === 'assertVisible' || name === 'assertNotVisible') {
+      const label = extractLabel(payload);
+      if (label) allLabels.push(label);
+    }
+  }
+  for (const label of allLabels) {
+    if (!fuzzyMatchesVocab(label, vocab)) {
+      issues.push({
+        severity: 'error',
+        check: 'hallucinated-label',
+        message: `Label "${label}" not found in scanned source vocabulary — likely AI hallucination`,
+      });
+    }
+  }
+
+  // 7. Ambiguous selector — same label appears on ≥2 elements in the offline vocab
+  const labelCounts = countOccurrences(vocab, tapTargets);
+  for (const [label, count] of labelCounts) {
+    if (count >= 2) {
+      issues.push({
+        severity: 'warn',
+        check: 'ambiguous-selector',
+        message: `Label "${label}" matches ${count} elements in source — Maestro may pick the wrong one`,
+      });
+    }
+  }
+
+  // Lenient mode: keep all issues but rewrite errors to warnings.
+  if (lenient) {
+    return issues.map((i) => (i.severity === 'error' ? { ...i, severity: 'warn' as const } : i));
+  }
+  return issues;
+}
+
+// Run-level checks that look across all flows in a build (not per-flow). Use
+// these to catch "the bot wrote 5 happy-path scenarios and zero negative tests"
+// kind of mistakes.
+export function validateRun(flows: MaestroFlow[]): MaestroValidationIssue[] {
+  const issues: MaestroValidationIssue[] = [];
+
+  // 9. No negative-path scenario across the whole run
+  const hasNegative = flows.some((f) => /invalid|wrong|error|fail|denied|missing|empty/i.test(f.scenario));
+  if (flows.length > 0 && !hasNegative) {
+    issues.push({
+      severity: 'warn',
+      check: 'no-negative-path',
+      message: 'No negative-path scenario detected across all flows — bot is only testing happy paths',
+    });
+  }
+
+  return issues;
+}
+
+function decodeCommand(cmd: unknown): { name: string | null; payload: unknown } {
+  if (typeof cmd === 'string') return { name: cmd, payload: undefined };
+  if (cmd && typeof cmd === 'object') {
+    const keys = Object.keys(cmd);
+    if (keys.length === 1) return { name: keys[0], payload: (cmd as Record<string, unknown>)[keys[0]] };
+  }
+  return { name: null, payload: undefined };
+}
+
+function extractLabel(payload: unknown): string | null {
+  if (typeof payload === 'string') return payload;
+  if (payload && typeof payload === 'object') {
+    const p = payload as { text?: unknown; id?: unknown };
+    if (typeof p.text === 'string') return p.text;
+    if (typeof p.id === 'string') return p.id;
+  }
+  return null;
+}
+
+function collectVocab(analysis: CodeAnalysis): Element[] {
+  return analysis.screens.flatMap((s) => s.elements);
+}
+
+function fuzzyMatchesVocab(label: string, vocab: Element[]): boolean {
+  const candidates = vocab
+    .flatMap((el) => [el.text, el.accessibilityId, el.resourceId, el.id])
+    .filter((s): s is string => Boolean(s));
+  if (candidates.length === 0) return true; // No vocab → can't check; don't false-flag.
+  const best = findBestMatch(label, candidates);
+  return Boolean(best && best.score >= FUZZY_VOCAB_THRESHOLD);
+}
+
+function countOccurrences(vocab: Element[], labels: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const label of labels) {
+    let count = 0;
+    for (const el of vocab) {
+      const cand = [el.text, el.accessibilityId, el.resourceId, el.id].filter((s): s is string => Boolean(s));
+      if (cand.some((c) => c.toLowerCase() === label.toLowerCase())) count++;
+    }
+    if (count > 0) out.set(label, (out.get(label) || 0) + count);
+  }
+  return out;
+}

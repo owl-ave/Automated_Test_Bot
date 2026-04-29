@@ -24,7 +24,7 @@ export interface PipelineContext {
   mobilePath?: string;
   diffFiles: DiffFile[];
   codeAnalysis?: CodeAnalysis;
-  scenariosBdd?: BddScenario[];
+  maestroFlows?: MaestroFlow[];
   testResults?: TestResult[];
   logs: string[];
   appBuild?: AppBuildResult;
@@ -88,15 +88,21 @@ export interface Flow {
   affectedByPr: boolean;
 }
 
-export interface BddScenario {
-  feature: string;
-  scenario: string;
-  steps: GherkinStep[];
+export type MaestroValidationSeverity = 'error' | 'warn';
+
+export interface MaestroValidationIssue {
+  severity: MaestroValidationSeverity;
+  check: string;
+  message: string;
 }
 
-export interface GherkinStep {
-  keyword: 'Given' | 'When' | 'Then' | 'And' | 'But';
-  text: string;
+export interface MaestroFlow {
+  feature: string;
+  scenario: string;
+  appId: string;
+  fileName: string;
+  yaml: string;
+  issues: MaestroValidationIssue[];
 }
 
 export interface TestResult {
