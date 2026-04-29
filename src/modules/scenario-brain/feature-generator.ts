@@ -1,8 +1,9 @@
-import { Flow, Screen, MaestroFlow, LaunchState, AuthConfig } from '../../types';
+import { Flow, Screen, MaestroFlow, LaunchState, AuthConfig, PreAuthGate } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
 import {
   getMaestroFlowPrompt,
   getMaestroDiffPrompt,
+  buildPreAuthGateYaml,
   MaestroPromptCreds,
   MaestroPromptLaunchState,
 } from '../../ai/prompts/feature-generation';
@@ -43,6 +44,7 @@ function toPromptLaunchState(ls?: LaunchState): MaestroPromptLaunchState | undef
     requiresAuth: ls.requiresAuth,
     authScreens: ls.authScreens,
     postAuthEntry: ls.postAuthEntry,
+    preAuthGates: ls.preAuthGates,
   };
 }
 
@@ -80,7 +82,7 @@ export class MaestroAuthor {
           creds,
         });
         const response = await this.claudeClient.analyzeCode('', prompt);
-        const parsed = this.parseFlowsJson(response, flow.name, inputs.appId);
+        const parsed = this.parseFlowsJson(response, flow.name, inputs.appId, inputs.launchState?.preAuthGates);
         this.logger.log(`Generated ${parsed.length} flows for ${flow.name}`);
         return parsed;
       } catch (error) {
@@ -115,14 +117,19 @@ export class MaestroAuthor {
       creds: toPromptCreds(inputs.authConfig),
     });
     const response = await this.claudeClient.analyzeCode('', prompt);
-    return this.parseFlowsJson(response, 'PR Changes', inputs.appId);
+    return this.parseFlowsJson(response, 'PR Changes', inputs.appId, inputs.launchState?.preAuthGates);
   }
 
   // The model is asked for raw JSON, but it sometimes still wraps in fences or
   // bookends with prose. Strip those, then JSON.parse strictly. Anything that
   // doesn't look like the expected shape gets dropped with a warning so a
   // single bad item doesn't tank the whole batch.
-  parseFlowsJson(response: string, defaultFeature: string, appId: string): MaestroFlow[] {
+  parseFlowsJson(
+    response: string,
+    defaultFeature: string,
+    appId: string,
+    preAuthGates?: PreAuthGate[],
+  ): MaestroFlow[] {
     const cleaned = response
       .replace(/```(?:json|yaml|yml)?\n?/gi, '')
       .replace(/```/g, '')
@@ -155,16 +162,69 @@ export class MaestroAuthor {
         this.logger.warn('Skipping malformed flow', { feature, scenario, hasBody: Boolean(body) });
         continue;
       }
+      const finalBody = this.ensurePreAuthPreamble(body, preAuthGates, scenario);
       out.push({
         feature,
         scenario,
         appId,
         fileName: `${slugify(scenario)}.yaml`,
-        yaml: assembleFlowYaml(appId, body),
+        yaml: assembleFlowYaml(appId, finalBody),
         issues: [],
       });
     }
     return out;
+  }
+
+  // Belt-and-braces guard: if the AI dropped the cold-launch preamble, splice
+  // it in deterministically. We detect "missing" by checking whether the
+  // first gate's anchor text or tap label appears anywhere in the body — a
+  // minimal heuristic that tolerates the AI rephrasing the preamble's
+  // formatting (e.g. quoting style, optional waitForVisible) but catches the
+  // common case where the model jumps straight from `launchApp` to the
+  // target screen's assertion.
+  ensurePreAuthPreamble(body: string, gates: PreAuthGate[] | undefined, scenario: string): string {
+    if (!gates || gates.length === 0) return body;
+
+    const gateMarkers = gates.flatMap((g) => {
+      const m: string[] = [];
+      if (g.waitForVisible) m.push(g.waitForVisible);
+      if (g.dismiss.type === 'tap') m.push(g.dismiss.label);
+      if (g.dismiss.type === 'tap-id') m.push(g.dismiss.id);
+      return m;
+    });
+    if (gateMarkers.length === 0) return body;
+
+    // If any of the first gate's markers appear in the body, assume the AI
+    // honoured the preamble (it may have reordered or expanded steps).
+    const firstGate = gates[0];
+    const firstGateMarkers: string[] = [];
+    if (firstGate.waitForVisible) firstGateMarkers.push(firstGate.waitForVisible);
+    if (firstGate.dismiss.type === 'tap') firstGateMarkers.push(firstGate.dismiss.label);
+    if (firstGate.dismiss.type === 'tap-id') firstGateMarkers.push(firstGate.dismiss.id);
+    const hasFirstGate = firstGateMarkers.some((m) => body.includes(m));
+    if (hasFirstGate) return body;
+
+    const preambleYaml = buildPreAuthGateYaml(gates);
+    if (!preambleYaml) return body;
+
+    this.logger.warn('Prepended cold-launch preamble to AI-generated flow', {
+      scenario,
+      gates: gates.map((g) => g.screen),
+    });
+
+    // Splice the preamble in immediately after `- launchApp`. If the body
+    // doesn't start with launchApp (rare — model misbehaviour), prepend
+    // `launchApp\n<preamble>\n` and rely on the validator to catch any
+    // remaining issues.
+    const launchAppRegex = /^(\s*-\s*launchApp\s*\n?)/;
+    const match = body.match(launchAppRegex);
+    if (match) {
+      const before = match[0];
+      const after = body.slice(before.length);
+      const beforeWithNewline = before.endsWith('\n') ? before : `${before}\n`;
+      return `${beforeWithNewline}${preambleYaml}\n${after}`;
+    }
+    return `- launchApp\n${preambleYaml}\n${body}`;
   }
 }
 

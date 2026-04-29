@@ -59,6 +59,24 @@ export interface CodeAnalysis {
   launchState?: LaunchState;
 }
 
+// Ordered gate the user passes through on cold launch before reaching the
+// first screen they can navigate from. Splash screens auto-dismiss; language
+// pickers / "Get Started" intros need a tap; OS permission dialogs need a
+// system-level Allow/Deny. The ScenarioBrain prepends a deterministic
+// preamble built from these to every generated flow so target-screen
+// assertions don't fire while a gate is still on screen.
+export type PreAuthGateDismiss =
+  | { type: 'auto' }
+  | { type: 'tap'; label: string }
+  | { type: 'tap-id'; id: string }
+  | { type: 'system-permission'; allow: boolean };
+
+export interface PreAuthGate {
+  screen: string;                 // matches a screen name from CodeAnalysis.screens
+  dismiss: PreAuthGateDismiss;
+  waitForVisible?: string;        // optional anchor text confirming the gate is up
+}
+
 // Snapshot of the target app's cold-launch behaviour, used by ScenarioBrain
 // to decide whether generated flows must include an auth prefix and which
 // screens are reachable without credentials.
@@ -68,6 +86,7 @@ export interface LaunchState {
   authScreens: string[];          // Pre-auth screens (Login, Signup, Onboarding, etc.)
   postAuthEntry?: string;         // First screen reached after successful authentication
   authMechanism?: 'email_password' | 'phone_otp' | 'username_password' | 'biometric' | 'wallet' | 'oauth' | 'unknown';
+  preAuthGates: PreAuthGate[];    // ORDERED gates user walks through on cold launch
   source: 'ai' | 'heuristic';     // How the state was determined (for debugging / confidence)
 }
 

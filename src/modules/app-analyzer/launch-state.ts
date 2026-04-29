@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { LaunchState, Screen } from '../../types';
+import { LaunchState, PreAuthGate, PreAuthGateDismiss, Screen } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
 import { safeJsonParse } from '../../ai/parse-json';
 import { Logger } from '../../utils/logger';
@@ -54,6 +54,7 @@ export class LaunchStateDetector {
           initialScreen: aiResult.initialScreen,
           requiresAuth: aiResult.requiresAuth,
           authScreenCount: aiResult.authScreens.length,
+          preAuthGates: aiResult.preAuthGates.map((g) => g.screen),
         });
         return aiResult;
       }
@@ -190,8 +191,13 @@ Identify:
 3. Which screens are reachable without authentication (login, signup, onboarding, splash, forgot password, etc.).
 4. Which screen the user lands on after successful authentication, if applicable.
 5. The authentication mechanism, if you can tell.
+6. The ORDERED sequence of gate screens the user passes through between cold launch and the first screen where they can make a navigation choice. Include splash screens, language pickers, "Get Started" intros, tracking-permission prompts, etc. For each gate, identify how it is dismissed:
+   - "auto" if it disappears on its own (animated splash, timed redirect)
+   - "tap" with the visible label of the primary button (e.g. "Continue", "Get Started", "Allow")
+   - "system-permission" if it is an OS dialog (notification permission, location, tracking) — set "allow" to true unless denying is required
+   For "tap" gates, optionally include "waitForVisible" — a unique text on that gate screen used to confirm it is up before tapping.
 
-Use ONLY screen names that appear in the list above for "initialScreen", "authScreens", and "postAuthEntry".
+Use ONLY screen names that appear in the list above for "initialScreen", "authScreens", "postAuthEntry", and each gate's "screen".
 
 ## Output
 Respond with ONLY a JSON object, no prose, no markdown fences:
@@ -200,7 +206,12 @@ Respond with ONLY a JSON object, no prose, no markdown fences:
   "requiresAuth": <true|false>,
   "authScreens": ["<screen name>", ...],
   "postAuthEntry": "<screen name or null>",
-  "authMechanism": "<email_password|phone_otp|username_password|biometric|wallet|oauth|unknown>"
+  "authMechanism": "<email_password|phone_otp|username_password|biometric|wallet|oauth|unknown>",
+  "preAuthGates": [
+    { "screen": "<screen name>", "dismiss": { "type": "auto" } },
+    { "screen": "<screen name>", "dismiss": { "type": "tap", "label": "<button label>" }, "waitForVisible": "<anchor text>" },
+    { "screen": "<screen name>", "dismiss": { "type": "system-permission", "allow": true } }
+  ]
 }`;
 
     const response = await this.claudeClient.analyzeCode('', prompt);
@@ -210,6 +221,7 @@ Respond with ONLY a JSON object, no prose, no markdown fences:
       authScreens?: unknown;
       postAuthEntry?: unknown;
       authMechanism?: unknown;
+      preAuthGates?: unknown;
     }>(response);
 
     if (!parsed || typeof parsed !== 'object') return null;
@@ -231,12 +243,15 @@ Respond with ONLY a JSON object, no prose, no markdown fences:
       ? (parsed.authMechanism as LaunchState['authMechanism'])
       : 'unknown';
 
+    const preAuthGates = parseAndValidateGates(parsed.preAuthGates, screens);
+
     return {
       initialScreen,
       requiresAuth,
       authScreens,
       postAuthEntry,
       authMechanism,
+      preAuthGates,
       source: 'ai',
     };
   }
@@ -262,7 +277,60 @@ Respond with ONLY a JSON object, no prose, no markdown fences:
       authScreens,
       postAuthEntry,
       authMechanism: 'unknown',
+      preAuthGates: [],
       source: 'heuristic',
     };
   }
+}
+
+// Parses + validates the AI's `preAuthGates` array. Drops any gate whose
+// screen isn't in the codebase, whose tap label isn't an actual element on
+// that screen, or whose shape we can't reconcile to a known dismiss type.
+// Anything sketchy is dropped silently — emitting a partial preamble is much
+// safer than emitting one with invented labels Maestro can't find.
+export function parseAndValidateGates(raw: unknown, screens: Screen[]): PreAuthGate[] {
+  if (!Array.isArray(raw)) return [];
+
+  const screenLookup = new Map(screens.map((s) => [s.name, s]));
+  const out: PreAuthGate[] = [];
+
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    if (typeof obj.screen !== 'string') continue;
+    const screen = screenLookup.get(obj.screen);
+    if (!screen) continue;
+
+    const dismissRaw = obj.dismiss as Record<string, unknown> | undefined;
+    if (!dismissRaw || typeof dismissRaw !== 'object') continue;
+
+    let dismiss: PreAuthGateDismiss | null = null;
+    if (dismissRaw.type === 'auto') {
+      dismiss = { type: 'auto' };
+    } else if (dismissRaw.type === 'tap' && typeof dismissRaw.label === 'string') {
+      const labelMatchesElement = screen.elements.some(
+        (e) => e.text === dismissRaw.label || e.accessibilityId === dismissRaw.label,
+      );
+      if (labelMatchesElement) {
+        dismiss = { type: 'tap', label: dismissRaw.label };
+      }
+    } else if (dismissRaw.type === 'tap-id' && typeof dismissRaw.id === 'string') {
+      const idMatches = screen.elements.some((e) => e.accessibilityId === dismissRaw.id || e.id === dismissRaw.id);
+      if (idMatches) {
+        dismiss = { type: 'tap-id', id: dismissRaw.id };
+      }
+    } else if (dismissRaw.type === 'system-permission') {
+      dismiss = { type: 'system-permission', allow: dismissRaw.allow !== false };
+    }
+
+    if (!dismiss) continue;
+
+    const gate: PreAuthGate = { screen: screen.name, dismiss };
+    if (typeof obj.waitForVisible === 'string' && obj.waitForVisible.trim()) {
+      gate.waitForVisible = obj.waitForVisible;
+    }
+    out.push(gate);
+  }
+
+  return out;
 }

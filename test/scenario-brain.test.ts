@@ -88,4 +88,64 @@ describe('MaestroAuthor.parseFlowsJson', () => {
     const flows = author.parseFlowsJson('I cannot help with that.', 'fallback', 'com.example.app');
     expect(flows).toEqual([]);
   });
+
+  describe('cold-launch preamble fallback', () => {
+    const gates = [
+      {
+        screen: 'LanguageGateView',
+        dismiss: { type: 'tap' as const, label: 'Continue' },
+        waitForVisible: 'Choose your language',
+      },
+    ];
+
+    it('prepends preamble to a flow that skipped the gate', () => {
+      const response = JSON.stringify([
+        {
+          feature: 'Onboarding',
+          scenario: 'sees invite code',
+          yaml: '- launchApp\n- assertVisible: "Enter Invite Code"',
+        },
+      ]);
+      const flows = author.parseFlowsJson(response, 'fallback', 'money.nola.app', gates);
+      expect(flows).toHaveLength(1);
+      const yaml = flows[0].yaml;
+      const langIdx = yaml.indexOf('Choose your language');
+      const tapContinueIdx = yaml.indexOf('tapOn: "Continue"');
+      const inviteIdx = yaml.indexOf('Enter Invite Code');
+      expect(langIdx).toBeGreaterThan(-1);
+      expect(tapContinueIdx).toBeGreaterThan(langIdx);
+      expect(inviteIdx).toBeGreaterThan(tapContinueIdx);
+    });
+
+    it('leaves the flow alone when the AI already included the preamble', () => {
+      const yaml =
+        '- launchApp\n' +
+        '- extendedWaitUntil:\n    visible: "Choose your language"\n    timeout: 15000\n' +
+        '- tapOn: "Continue"\n' +
+        '- assertVisible: "Enter Invite Code"';
+      const response = JSON.stringify([
+        { feature: 'Onboarding', scenario: 'sees invite code', yaml },
+      ]);
+      const flows = author.parseFlowsJson(response, 'fallback', 'money.nola.app', gates);
+      const occurrences = flows[0].yaml.split('Choose your language').length - 1;
+      expect(occurrences).toBe(1); // not duplicated
+    });
+
+    it('skips fallback when no gates are provided', () => {
+      const response = JSON.stringify([
+        { feature: 'A', scenario: 'sees invite', yaml: '- launchApp\n- assertVisible: "Hi"' },
+      ]);
+      const flows = author.parseFlowsJson(response, 'fallback', 'app', []);
+      expect(flows[0].yaml).toContain('- launchApp\n- assertVisible: "Hi"');
+      expect(flows[0].yaml).not.toContain('Choose your language');
+    });
+
+    it('prepends launchApp + preamble when the AI somehow omitted launchApp', () => {
+      const response = JSON.stringify([
+        { feature: 'A', scenario: 'odd flow', yaml: '- assertVisible: "Enter Invite Code"' },
+      ]);
+      const flows = author.parseFlowsJson(response, 'fallback', 'app', gates);
+      expect(flows[0].yaml).toMatch(/- launchApp[\s\S]*Choose your language[\s\S]*Enter Invite Code/);
+    });
+  });
 });

@@ -103,6 +103,85 @@ describe('getMaestroFlowPrompt — launch-state aware', () => {
     expect(prompt).toContain('+15555550100');
     expect(prompt).toContain('"Phone"'); // input-field heading
   });
+
+  describe('cold-launch preamble', () => {
+    const launchStateWithGates: MaestroPromptLaunchState = {
+      initialScreen: 'SplashView',
+      requiresAuth: true,
+      authScreens: ['LanguageGateView', 'InviteCodeView'],
+      preAuthGates: [
+        { screen: 'SplashView', dismiss: { type: 'auto' } },
+        {
+          screen: 'LanguageGateView',
+          dismiss: { type: 'tap', label: 'Continue' },
+          waitForVisible: 'Choose your language',
+        },
+      ],
+    };
+
+    it('renders preamble block when preAuthGates are present', () => {
+      const prompt = getMaestroFlowPrompt({
+        ...baseArgs,
+        launchState: launchStateWithGates,
+      });
+      expect(prompt).toContain('Cold-launch preamble is mandatory');
+      expect(prompt).toContain('SplashView → LanguageGateView');
+      expect(prompt).toContain('visible: "Choose your language"');
+      expect(prompt).toContain('tapOn: "Continue"');
+    });
+
+    it('omits preamble block when preAuthGates is empty', () => {
+      const prompt = getMaestroFlowPrompt({
+        ...baseArgs,
+        launchState: { ...launchStateRequiresAuth, preAuthGates: [] },
+      });
+      expect(prompt).not.toContain('Cold-launch preamble is mandatory');
+    });
+
+    it('preamble appears before the auth prefix when both apply', () => {
+      const prompt = getMaestroFlowPrompt({
+        ...baseArgs,
+        launchState: { ...launchStateWithGates, postAuthEntry: 'HomeView' },
+        creds,
+      });
+      const preambleIdx = prompt.indexOf('Cold-launch preamble is mandatory');
+      const authIdx = prompt.indexOf('Authentication prefix is mandatory');
+      expect(preambleIdx).toBeGreaterThan(-1);
+      expect(authIdx).toBeGreaterThan(-1);
+      expect(preambleIdx).toBeLessThan(authIdx);
+    });
+
+    it('auth prefix template includes preamble steps between launchApp and login wait', () => {
+      const prompt = getMaestroFlowPrompt({
+        ...baseArgs,
+        launchState: { ...launchStateWithGates, postAuthEntry: 'HomeView' },
+        creds,
+      });
+      // Inside the auth-prefix code block, "Choose your language" wait must
+      // appear before the Email-field wait.
+      const langIdx = prompt.indexOf('visible: "Choose your language"');
+      const emailWaitIdx = prompt.indexOf('visible: "Email"');
+      expect(langIdx).toBeGreaterThan(-1);
+      expect(emailWaitIdx).toBeGreaterThan(langIdx);
+    });
+
+    it('renders preamble even in no-auth mode', () => {
+      const prompt = getMaestroFlowPrompt({
+        ...baseArgs,
+        launchState: {
+          ...launchStateNoAuth,
+          preAuthGates: [
+            {
+              screen: 'LanguageGateView',
+              dismiss: { type: 'tap', label: 'Continue' },
+              waitForVisible: 'Choose your language',
+            },
+          ],
+        },
+      });
+      expect(prompt).toContain('Cold-launch preamble is mandatory');
+    });
+  });
 });
 
 describe('getMaestroDiffPrompt — launch-state aware', () => {

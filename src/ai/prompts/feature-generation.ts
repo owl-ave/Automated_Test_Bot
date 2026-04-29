@@ -9,11 +9,55 @@ export interface MaestroPromptScreen {
 
 // Subset of LaunchState we surface in prompts. Decoupled from the full type so
 // the prompt module doesn't need to import from types.ts (avoids cycles).
+export type MaestroPromptGateDismiss =
+  | { type: 'auto' }
+  | { type: 'tap'; label: string }
+  | { type: 'tap-id'; id: string }
+  | { type: 'system-permission'; allow: boolean };
+
+export interface MaestroPromptGate {
+  screen: string;
+  dismiss: MaestroPromptGateDismiss;
+  waitForVisible?: string;
+}
+
 export interface MaestroPromptLaunchState {
   initialScreen: string;
   requiresAuth: boolean;
   authScreens: string[];
   postAuthEntry?: string;
+  preAuthGates?: MaestroPromptGate[];
+}
+
+// Builds the Maestro YAML lines that dismiss each gate in order. Used both to
+// render the example preamble inside the prompt and (deterministically) to
+// prepend the same preamble to AI-generated flows that drop it. The output
+// does NOT include `- launchApp` — callers add that as the first line of the
+// flow body.
+export function buildPreAuthGateYaml(gates: MaestroPromptGate[]): string {
+  const lines: string[] = [];
+  for (const gate of gates) {
+    if (gate.dismiss.type === 'auto') {
+      const anchor = gate.waitForVisible;
+      if (anchor) {
+        lines.push(`- extendedWaitUntil:\n    visible: "${anchor}"\n    timeout: 15000`);
+      }
+      // No tap — splash auto-dismisses.
+    } else if (gate.dismiss.type === 'tap') {
+      const anchor = gate.waitForVisible ?? gate.dismiss.label;
+      lines.push(`- extendedWaitUntil:\n    visible: "${anchor}"\n    timeout: 15000`);
+      lines.push(`- tapOn: "${gate.dismiss.label}"`);
+    } else if (gate.dismiss.type === 'tap-id') {
+      if (gate.waitForVisible) {
+        lines.push(`- extendedWaitUntil:\n    visible: "${gate.waitForVisible}"\n    timeout: 15000`);
+      }
+      lines.push(`- tapOn:\n    id: "${gate.dismiss.id}"`);
+    } else if (gate.dismiss.type === 'system-permission') {
+      const button = gate.dismiss.allow ? 'Allow' : "Don't Allow";
+      lines.push(`- tapOn: "${button}"`);
+    }
+  }
+  return lines.join('\n');
 }
 
 export interface MaestroPromptCreds {
@@ -204,20 +248,41 @@ function formatLaunchStateSection(
 - Pre-auth screens (reachable without login): ${ls.authScreens.length > 0 ? ls.authScreens.join(', ') : '(none)'}${ls.postAuthEntry ? `\n- First screen after successful login: ${ls.postAuthEntry}` : ''}
 `;
 
+  const gates = ls.preAuthGates ?? [];
+  const preambleYaml = gates.length > 0 ? buildPreAuthGateYaml(gates) : '';
+  const preambleBlock = preambleYaml
+    ? `
+## CRITICAL: Cold-launch preamble is mandatory
+On cold launch this app passes through these gate screens in order before any user-facing flow can proceed: ${gates.map((g) => g.screen).join(' → ')}. EVERY flow you generate MUST begin with the following preamble immediately after \`launchApp\`, in this exact order, BEFORE any flow-specific steps:
+
+\`\`\`
+- launchApp
+${preambleYaml}
+\`\`\`
+
+Then continue with your flow-specific steps. Do NOT skip the preamble even if the flow's "Screens involved" list does not mention these gate screens — every cold launch traverses them.
+
+`
+    : '';
+
+  // The launchApp + preamble form the start of every flow. The auth prefix
+  // (when present) follows the preamble.
+  const launchAndPreamble = preambleYaml ? `- launchApp\n${preambleYaml}` : '- launchApp';
+
   if (!ls.requiresAuth) {
-    return `${header}\n`;
+    return `${header}${preambleBlock}\n`;
   }
 
   if (credsAvailable && flowTouchesPostAuth) {
     const loginIdentifier = creds!.email ?? creds!.phone ?? creds!.username ?? 'test@example.com';
     const idField = creds!.email ? 'Email' : creds!.phone ? 'Phone' : 'Username';
     const passwordValue = creds!.password ?? 'TestPass123!';
-    return `${header}
+    return `${header}${preambleBlock}
 ## CRITICAL: Authentication prefix is mandatory
 This app requires authentication before any non-auth screen is reachable. EVERY flow you generate that targets a post-auth screen MUST begin with the following prefix, in this exact order, BEFORE any flow-specific steps:
 
 \`\`\`
-- launchApp
+${launchAndPreamble}
 - extendedWaitUntil:
     visible: "${idField}"
     timeout: 15000
@@ -231,7 +296,7 @@ This app requires authentication before any non-auth screen is reachable. EVERY 
     timeout: 15000
 \`\`\`
 
-Adapt the visible labels above to match the actual login screen elements (use the screen vocabulary you were given). The intent is fixed: launch → wait for auth screen → fill credentials → submit → wait for post-auth landing → then proceed with your scenario steps.
+Adapt the visible labels above to match the actual login screen elements (use the screen vocabulary you were given). The intent is fixed: launch → ${preambleYaml ? 'dismiss cold-launch gates → ' : ''}wait for auth screen → fill credentials → submit → wait for post-auth landing → then proceed with your scenario steps.
 
 Do NOT skip the prefix even if the flow's "Screens involved" list does not explicitly mention the login screen — the user always has to authenticate first.
 
@@ -239,7 +304,7 @@ Do NOT skip the prefix even if the flow's "Screens involved" list does not expli
   }
 
   if (ls.requiresAuth && !credsAvailable) {
-    return `${header}
+    return `${header}${preambleBlock}
 ## CRITICAL: No test credentials available
 The target repo does not provide a \`bot-test-config.json\` with auth credentials, so post-authentication screens are NOT reachable in this run.
 
@@ -256,7 +321,7 @@ If the requested flow targets a post-auth screen, return an empty array \`[]\` �
 `;
   }
 
-  return `${header}\n`;
+  return `${header}${preambleBlock}\n`;
 }
 
 // Renders the "Highly ambiguous labels" section for both prompts. Returns an empty

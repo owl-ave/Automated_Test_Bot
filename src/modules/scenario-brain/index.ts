@@ -102,6 +102,15 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
       });
     }
 
+    if (launchState?.preAuthGates && launchState.preAuthGates.length > 0) {
+      logger.log('Cold-launch preamble', {
+        gates: launchState.preAuthGates.map((g) => ({
+          screen: g.screen,
+          dismiss: g.dismiss.type,
+        })),
+      });
+    }
+
     let flows: MaestroFlow[];
     const launchStateFiltered = filterFlowsByLaunchState(
       context.codeAnalysis.criticalFlows,

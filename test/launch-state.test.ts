@@ -1,8 +1,12 @@
-import { LaunchStateDetector } from '../src/modules/app-analyzer/launch-state';
-import { Screen } from '../src/types';
+import { LaunchStateDetector, parseAndValidateGates } from '../src/modules/app-analyzer/launch-state';
+import { Element, Screen } from '../src/types';
 
-function screen(name: string): Screen {
-  return { name, path: `${name}.swift`, type: 'swiftui-view', elements: [] };
+function screen(name: string, elements: Element[] = []): Screen {
+  return { name, path: `${name}.swift`, type: 'swiftui-view', elements };
+}
+
+function el(text: string, accessibilityId?: string): Element {
+  return { id: text, type: 'button', text, accessibilityId };
 }
 
 describe('LaunchStateDetector heuristic fallback', () => {
@@ -58,5 +62,104 @@ describe('LaunchStateDetector heuristic fallback', () => {
     );
     expect(result.source).toBe('heuristic');
     expect(result.requiresAuth).toBe(true);
+  });
+
+  it('heuristic populates preAuthGates as empty array', () => {
+    const result = detector.heuristicFallback([screen('LoginView'), screen('Home')]);
+    expect(result.preAuthGates).toEqual([]);
+  });
+});
+
+describe('parseAndValidateGates', () => {
+  const screens: Screen[] = [
+    screen('SplashView'),
+    screen('LanguageGateView', [el('Continue'), el('Choose your language')]),
+    screen('OnboardingView', [el('Get Started')]),
+    screen('PermissionView'),
+  ];
+
+  it('returns [] for non-array input', () => {
+    expect(parseAndValidateGates(undefined, screens)).toEqual([]);
+    expect(parseAndValidateGates({}, screens)).toEqual([]);
+    expect(parseAndValidateGates('nope', screens)).toEqual([]);
+  });
+
+  it('keeps a valid auto-dismiss gate', () => {
+    const result = parseAndValidateGates(
+      [{ screen: 'SplashView', dismiss: { type: 'auto' } }],
+      screens,
+    );
+    expect(result).toEqual([{ screen: 'SplashView', dismiss: { type: 'auto' } }]);
+  });
+
+  it('keeps a tap gate when label matches an element on the screen', () => {
+    const result = parseAndValidateGates(
+      [
+        {
+          screen: 'LanguageGateView',
+          dismiss: { type: 'tap', label: 'Continue' },
+          waitForVisible: 'Choose your language',
+        },
+      ],
+      screens,
+    );
+    expect(result).toEqual([
+      {
+        screen: 'LanguageGateView',
+        dismiss: { type: 'tap', label: 'Continue' },
+        waitForVisible: 'Choose your language',
+      },
+    ]);
+  });
+
+  it('drops a tap gate whose label is not an element of that screen', () => {
+    const result = parseAndValidateGates(
+      [{ screen: 'LanguageGateView', dismiss: { type: 'tap', label: 'Skip' } }],
+      screens,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('drops a gate whose screen is not in the codebase', () => {
+    const result = parseAndValidateGates(
+      [{ screen: 'GhostScreen', dismiss: { type: 'auto' } }],
+      screens,
+    );
+    expect(result).toEqual([]);
+  });
+
+  it('preserves order across mixed valid/invalid gates', () => {
+    const result = parseAndValidateGates(
+      [
+        { screen: 'SplashView', dismiss: { type: 'auto' } },
+        { screen: 'GhostScreen', dismiss: { type: 'auto' } },
+        { screen: 'LanguageGateView', dismiss: { type: 'tap', label: 'Continue' } },
+        { screen: 'OnboardingView', dismiss: { type: 'tap', label: 'Get Started' } },
+      ],
+      screens,
+    );
+    expect(result.map((g) => g.screen)).toEqual([
+      'SplashView',
+      'LanguageGateView',
+      'OnboardingView',
+    ]);
+  });
+
+  it('accepts system-permission gates and defaults allow=true', () => {
+    const result = parseAndValidateGates(
+      [{ screen: 'PermissionView', dismiss: { type: 'system-permission' } }],
+      screens,
+    );
+    expect(result).toEqual([
+      { screen: 'PermissionView', dismiss: { type: 'system-permission', allow: true } },
+    ]);
+  });
+
+  it('honours explicit allow=false on system-permission', () => {
+    const result = parseAndValidateGates(
+      [{ screen: 'PermissionView', dismiss: { type: 'system-permission', allow: false } }],
+      screens,
+    );
+    expect(result[0].dismiss).toEqual({ type: 'system-permission', allow: false });
   });
 });
