@@ -278,6 +278,34 @@ describe('LaunchStateDetector entry-point discovery', () => {
     expect(client.lastPrompt).toContain('Gate enum lives here');
   });
 
+  it('skips vendor AppDelegates under build/DerivedData (Nola PR#8 regression repro)', async () => {
+    // The 2026-04-29 re-run had `ios/**/AppDelegate.swift` matching three
+    // sample apps inside SwiftPM checkouts (Firebase, GoogleDataTransport)
+    // which filled the 3-file cap before the real routing file could be
+    // collected. Result: AI saw vendor code, no preauth gate emitted.
+    write('ios/Nola.xcodeproj/project.pbxproj', '');
+    write('ios/build/DerivedData/SourcePackages/checkouts/firebase-ios-sdk/Example/tvOSSample/tvOSSample/AppDelegate.swift', '// vendor sample — must not be picked up');
+    write('ios/build/DerivedData/SourcePackages/checkouts/firebase-ios-sdk/CoreOnly/Tests/FirebasePodTest/FirebasePodTest/AppDelegate.swift', '// vendor sample');
+    write('ios/build/DerivedData/SourcePackages/checkouts/GoogleDataTransport/GoogleDataTransport/GDTCCTWatchOSTestApp/GDTCCTiOSTestAppForCompanionWatchApp/AppDelegate.swift', '// vendor sample');
+    write('ios/Pods/SomePodWithItsOwnApp/AppDelegate.swift', '// pod sample');
+    write('ios/app/App/AppRouter.swift', '// real routing file');
+    write('ios/app/App/NolaApp.swift', '// @main struct');
+
+    const client = new CapturingClient();
+    const detector = new LaunchStateDetector(client);
+    await detector.detect(
+      [{ name: 'LanguageGateView', path: 'x.swift', type: 'swiftui-view', elements: [] }],
+      'swift',
+      path.join(tmp, 'ios'),
+    );
+
+    expect(client.lastPrompt).toContain('AppRouter.swift');
+    expect(client.lastPrompt).toContain('NolaApp.swift');
+    expect(client.lastPrompt).not.toContain('vendor sample');
+    expect(client.lastPrompt).not.toContain('pod sample');
+    expect(client.lastPrompt).not.toContain('build/DerivedData');
+  });
+
   it('still picks up traditional flat layouts (AppDelegate.swift directly under ios/<project>)', async () => {
     write('ios/MyApp.xcodeproj/project.pbxproj', '');
     write('ios/MyApp/AppDelegate.swift', '// classic AppDelegate');

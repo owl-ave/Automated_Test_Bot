@@ -40,6 +40,22 @@ const ENTRY_POINT_HINTS = [
 
 const AUTH_SCREEN_NAME_RX = /login|signin|sign[_-]?in|signup|sign[_-]?up|register|onboard|welcome|splash|forgot|reset|otp|verify|auth/i;
 
+// Directories the entry-point `**` glob must NOT recurse into. Without this,
+// a build dir like `ios/build/DerivedData/SourcePackages/checkouts/.../AppDelegate.swift`
+// (Firebase / GoogleDataTransport sample apps shipped inside SwiftPM checkouts)
+// gets picked up before the real routing files. Run from 2026-04-29 (Nola PR#8)
+// hit this — the AI received vendor sample app code as the "entry point" and
+// emitted no preauth gate. Hidden dirs (`.build`, `.git`) are already excluded
+// via the startsWith('.') check; this set covers the non-hidden cases.
+const ENTRY_POINT_GLOB_SKIP_DIRS = new Set([
+  'build',
+  'DerivedData',
+  'Pods',
+  'Carthage',
+  'vendor',
+  'node_modules',
+]);
+
 export class LaunchStateDetector {
   private claudeClient: ClaudeClient;
 
@@ -136,7 +152,7 @@ export class LaunchStateDetector {
         return results;
       }
       for (const entry of entries) {
-        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+        if (entry.isDirectory() && !entry.name.startsWith('.') && !ENTRY_POINT_GLOB_SKIP_DIRS.has(entry.name)) {
           results.push(...this.walkSegments(path.join(currentDir, entry.name), segments));
         }
       }
