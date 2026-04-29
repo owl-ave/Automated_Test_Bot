@@ -292,6 +292,26 @@ export class RepoScanner {
     // TextField/SecureField placeholders: TextField("placeholder", ...)
     for (const m of content.matchAll(/(?:TextField|SecureField)\s*\(\s*["']([^"']+)["']/g)) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'textfield', m[1]);
 
+    // SwiftUI Text("xxx") — covers static labels including .tabItem { Text("Home") }
+    for (const m of content.matchAll(/\bText\s*\(\s*["']([^"']+)["']/g)) {
+      if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'text', m[1]);
+    }
+
+    // SwiftUI Label("xxx", systemImage: ...) / Label("xxx", image: ...) — typical tab bar items
+    for (const m of content.matchAll(/\bLabel\s*\(\s*["']([^"']+)["']\s*,\s*(?:systemImage|image)\s*:/g)) {
+      if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'label', m[1]);
+    }
+
+    // SwiftUI screen titles: .navigationTitle("xxx") / .navigationBarTitle("xxx")
+    for (const m of content.matchAll(/\.navigation(?:Bar)?Title\s*\(\s*["']([^"']+)["']/g)) {
+      if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'title', m[1]);
+    }
+
+    // SwiftUI form controls: Toggle("xxx", ...), Picker("xxx", ...), Stepper("xxx", ...)
+    for (const m of content.matchAll(/\b(?:Toggle|Picker|Stepper)\s*\(\s*["']([^"']+)["']/g)) {
+      if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'control', m[1]);
+    }
+
     // UILabel.text = "xxx"
     for (const m of content.matchAll(/\.text\s*=\s*["']([^"']+)["']/g)) {
       if (m[1].length < 60) add(m[1].replace(/\s+/g, '_').toLowerCase(), 'label', m[1]);

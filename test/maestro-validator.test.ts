@@ -81,15 +81,17 @@ describe('validateMaestroFlow', () => {
     expect(issues.some((i) => i.check === 'missing-assertion')).toBe(true);
   });
 
-  it('errors on hallucinated label not in vocab', () => {
+  it('does not block on labels missing from offline vocab (Maestro is source of truth)', () => {
     const yaml = `appId: com.example.app
 ---
 - launchApp
-- tapOn: Submit Order Now
-- assertVisible: Welcome
+- tapOn: Home
+- tapOn: Transactions
+- assertVisible: Cards
 `;
     const issues = validateMaestroFlow(makeFlow(yaml), ctx);
-    expect(issues.some((i) => i.check === 'hallucinated-label')).toBe(true);
+    expect(issues.filter((i) => i.severity === 'error')).toEqual([]);
+    expect(issues.some((i) => i.check === 'hallucinated-label')).toBe(false);
   });
 
   it('errors on hardcoded production-looking email', () => {
@@ -135,16 +137,6 @@ describe('validateMaestroFlow', () => {
 `;
     const issues = validateMaestroFlow(makeFlow(yaml), ctx);
     expect(issues.some((i) => i.check === 'empty-flow')).toBe(true);
-  });
-
-  it('demotes errors to warnings in lenient mode', () => {
-    const yaml = `appId: com.example.app
----
-- launchApp
-- tapOn: Some Phantom Button
-`;
-    const issues = validateMaestroFlow(makeFlow(yaml), { ...ctx, lenient: true });
-    expect(issues.every((i) => i.severity === 'warn')).toBe(true);
   });
 
   it('errors on YAML parse failure', () => {

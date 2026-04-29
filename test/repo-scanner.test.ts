@@ -101,6 +101,61 @@ struct NewScreen: View {
       expect(newScreen?.type).toBe('swiftui-view');
     });
 
+    it('extracts SwiftUI tab-bar labels via Label() and Text()', () => {
+      writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
+      writeFile(tmpDir, 'MainTabView.swift', `
+import SwiftUI
+struct MainTabView: View {
+  var body: some View {
+    TabView {
+      HomeView()
+        .tabItem { Label("Home", systemImage: "house") }
+      TransactionsView()
+        .tabItem { Label("Transactions", systemImage: "list.bullet") }
+      CardsView()
+        .tabItem { Text("Cards") }
+    }
+  }
+}
+`);
+
+      const scanner = new RepoScanner(tmpDir);
+      const result = scanner.scan();
+
+      const tabView = result.screens.find((s) => s.name === 'MainTabView');
+      expect(tabView).toBeDefined();
+      const texts = tabView!.elements.map((e) => e.text);
+      expect(texts).toContain('Home');
+      expect(texts).toContain('Transactions');
+      expect(texts).toContain('Cards');
+    });
+
+    it('extracts navigationTitle and form control labels', () => {
+      writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
+      writeFile(tmpDir, 'SettingsView.swift', `
+import SwiftUI
+struct SettingsView: View {
+  @State var notificationsOn = false
+  var body: some View {
+    Form {
+      Toggle("Push Notifications", isOn: $notificationsOn)
+      Picker("Theme", selection: .constant(0)) { Text("Light"); Text("Dark") }
+    }
+    .navigationTitle("Settings")
+  }
+}
+`);
+
+      const scanner = new RepoScanner(tmpDir);
+      const result = scanner.scan();
+
+      const view = result.screens.find((s) => s.name === 'SettingsView')!;
+      const texts = view.elements.map((e) => e.text);
+      expect(texts).toContain('Settings');
+      expect(texts).toContain('Push Notifications');
+      expect(texts).toContain('Theme');
+    });
+
     it('ignores non-screen Swift files', () => {
       writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
       writeFile(tmpDir, 'NetworkManager.swift', `

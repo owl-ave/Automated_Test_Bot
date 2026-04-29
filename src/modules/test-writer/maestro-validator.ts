@@ -1,14 +1,16 @@
 import * as yaml from 'js-yaml';
 import { CodeAnalysis, Element, MaestroFlow, MaestroValidationIssue } from '../../types';
-import { findBestMatch } from '../self-healer/heuristics';
 
-// Twelve checks for common AI-agent mistakes when generating Maestro flows.
+// Structural checks for common AI-agent mistakes when generating Maestro flows.
 // Errors block submission to BrowserStack (would burn quota for nothing);
 // warnings ride along on the flow object and surface in the PR comment.
 //
-// Lenient mode (env MAESTRO_VALIDATOR_LENIENT=true) demotes errors to warnings
-// so a temporarily out-of-sync source scan doesn't block a PR — useful when
-// repo-scanner.ts misses a label that genuinely exists in the running app.
+// Label validity (does "Home" actually exist in the app?) is intentionally NOT
+// checked here — the regex-based source scan is incomplete by nature, so any
+// offline vocabulary check produces false positives whenever the scanner misses
+// a pattern (localized strings, constants, new SwiftUI APIs, etc.). Maestro
+// itself is the source of truth for label resolution: a hallucinated label
+// fails at `assertVisible` runtime, which is the correct place to find out.
 
 const SUPPORTED_COMMANDS = new Set([
   'launchApp',
@@ -29,7 +31,6 @@ const SUPPORTED_COMMANDS = new Set([
 ]);
 
 const MAX_REPEAT_TIMES = 20;
-const FUZZY_VOCAB_THRESHOLD = 0.6;
 
 const TEST_DOMAINS = [/example\.com$/i, /test\.com$/i, /test\.dev$/i, /localhost$/i, /\.test$/i];
 const REAL_PHONE_RE = /\b(?:\+?\d{1,3}[-.\s]?)?(?!555[-.\s]?01\d{2})\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/;
@@ -38,11 +39,9 @@ const CREDIT_CARD_RE = /\b(?:4\d{3}|5[1-5]\d{2}|3[47]\d{2}|6011)[-\s]?\d{4}[-\s]
 export interface ValidatorContext {
   codeAnalysis: CodeAnalysis;
   expectedAppIds: { android?: string; ios?: string };
-  lenient?: boolean;
 }
 
 export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): MaestroValidationIssue[] {
-  const lenient = ctx.lenient ?? process.env.MAESTRO_VALIDATOR_LENIENT === 'true';
   const issues: MaestroValidationIssue[] = [];
 
   let parsed: unknown;
@@ -154,7 +153,7 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
       }
     }
 
-    // Track tap targets for ambiguity check (#7) and hallucination check (#1)
+    // Track tap targets for ambiguity check (#7)
     if (name === 'tapOn') {
       const label = extractLabel(payload);
       if (label) tapTargets.push(label);
@@ -170,28 +169,10 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
     });
   }
 
-  // 1. Hallucinated labels — every tapOn / assertVisible string must fuzzy-match
-  // an entry in the offline element vocabulary.
+  // 7. Ambiguous selector — same label appears on ≥2 elements in the offline vocab.
+  // Surfaced as warning only: scanner over-counts (e.g. same label captured by both
+  // Text() and Label() regex), so this isn't reliable enough to block on.
   const vocab = collectVocab(ctx.codeAnalysis);
-  const allLabels = [...tapTargets];
-  for (const cmd of commands) {
-    const { name, payload } = decodeCommand(cmd);
-    if (name === 'assertVisible' || name === 'assertNotVisible') {
-      const label = extractLabel(payload);
-      if (label) allLabels.push(label);
-    }
-  }
-  for (const label of allLabels) {
-    if (!fuzzyMatchesVocab(label, vocab)) {
-      issues.push({
-        severity: 'error',
-        check: 'hallucinated-label',
-        message: `Label "${label}" not found in scanned source vocabulary — likely AI hallucination`,
-      });
-    }
-  }
-
-  // 7. Ambiguous selector — same label appears on ≥2 elements in the offline vocab
   const labelCounts = countOccurrences(vocab, tapTargets);
   for (const [label, count] of labelCounts) {
     if (count >= 2) {
@@ -203,10 +184,6 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
     }
   }
 
-  // Lenient mode: keep all issues but rewrite errors to warnings.
-  if (lenient) {
-    return issues.map((i) => (i.severity === 'error' ? { ...i, severity: 'warn' as const } : i));
-  }
   return issues;
 }
 
@@ -250,15 +227,6 @@ function extractLabel(payload: unknown): string | null {
 
 function collectVocab(analysis: CodeAnalysis): Element[] {
   return analysis.screens.flatMap((s) => s.elements);
-}
-
-function fuzzyMatchesVocab(label: string, vocab: Element[]): boolean {
-  const candidates = vocab
-    .flatMap((el) => [el.text, el.accessibilityId, el.resourceId, el.id])
-    .filter((s): s is string => Boolean(s));
-  if (candidates.length === 0) return true; // No vocab → can't check; don't false-flag.
-  const best = findBestMatch(label, candidates);
-  return Boolean(best && best.score >= FUZZY_VOCAB_THRESHOLD);
 }
 
 function countOccurrences(vocab: Element[], labels: string[]): Map<string, number> {
