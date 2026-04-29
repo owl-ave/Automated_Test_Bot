@@ -25,7 +25,6 @@ const SUPPORTED_COMMANDS_REFERENCE = `## Supported Maestro commands (use ONLY th
     element:
       text: "<visible label>"
 - back                                   # OS back button (Android)
-- takeScreenshot
 - pressKey: HOME | ENTER | BACK
 - hideKeyboard
 - eraseText`;

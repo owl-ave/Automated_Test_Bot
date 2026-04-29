@@ -167,11 +167,16 @@ async function pollBuildUntilDone(
   let lastProgressLogAt = startedAt;
   let lastStatus = '';
 
+  // BS Maestro v2 reports `skipped` when no test cases ran (e.g. malformed
+  // YAML rejected by Maestro's parser, or no available device). It's terminal
+  // — the build is over — but easy to miss because the name implies "in
+  // progress". Run #70 lost 36 minutes polling 3 already-skipped builds.
+  const TERMINAL = new Set(['done', 'passed', 'failed', 'error', 'timeout', 'skipped']);
   while (Date.now() < deadline) {
     const res = await axios.get(buildStatusUrl(buildId), { auth, timeout: 30_000 });
     const data = res.data as MaestroBuildResponse;
     const status = (data.status || '').toLowerCase();
-    if (status === 'done' || status === 'passed' || status === 'failed' || status === 'error' || status === 'timeout') {
+    if (TERMINAL.has(status)) {
       return data;
     }
     lastStatus = status;
@@ -236,7 +241,16 @@ async function mapBuildToResults(
         });
       const status = mapStatus(session.status || sessionDetails?.status);
       const videoUrl = sessionDetails?.video_url ?? sessionDetails?.testcases?.find((tc) => tc.video_url)?.video_url;
-      const errorMessage = sessionDetails?.testcases?.find((tc) => tc.status && tc.status.toLowerCase() !== 'passed')?.error;
+      // When a session is `skipped` (parse failure, no device, etc.) there are
+      // zero testcases — the real reason lives at session.error. Fall back to
+      // it before the per-testcase error so users see "No Tests Ran: parse
+      // error" instead of an empty error field.
+      const sessionError =
+        session.error?.short_error_message ||
+        session.error?.message ||
+        sessionDetails?.error?.short_error_message ||
+        sessionDetails?.error?.message;
+      const testcaseError = sessionDetails?.testcases?.find((tc) => tc.status && tc.status.toLowerCase() !== 'passed')?.error;
       results.push({
         scenario: session.testcases?.[0]?.name ?? device.device ?? 'flow',
         status,
@@ -244,7 +258,7 @@ async function mapBuildToResults(
         sessionId: session.id,
         duration: typeof session.duration === 'number' ? session.duration * 1000 : 0,
         videoUrl,
-        error: errorMessage,
+        error: testcaseError || sessionError,
       });
     }
   }
@@ -290,12 +304,21 @@ function mapStatus(s: string | undefined): TestResult['status'] {
   if (!s) return 'fail';
   const v = s.toLowerCase();
   if (v === 'passed' || v === 'pass' || v === 'success' || v === 'done') return 'pass';
-  if (v === 'failed' || v === 'fail' || v === 'error' || v === 'timeout') return 'fail';
+  // `skipped` here means BS terminated the session before any test case ran
+  // (parse failure, suite rejected, no device, etc.). That's a hard fail from
+  // the bot's perspective — we got zero signal — not a warning.
+  if (v === 'failed' || v === 'fail' || v === 'error' || v === 'timeout' || v === 'skipped') return 'fail';
   return 'warn';
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface MaestroSessionError {
+  message?: string;
+  code?: string | null;
+  short_error_message?: string;
 }
 
 interface MaestroBuildResponse {
@@ -308,6 +331,7 @@ interface MaestroBuildResponse {
       status?: string;
       start_time?: string;
       duration?: number;
+      error?: MaestroSessionError;
       testcases?: Array<{ name?: string; status?: string; error?: string }>;
     }>;
   }>;
@@ -316,6 +340,7 @@ interface MaestroBuildResponse {
 interface MaestroSessionDetails {
   status?: string;
   video_url?: string;
+  error?: MaestroSessionError;
   testcases?: Array<{
     name?: string;
     status?: string;

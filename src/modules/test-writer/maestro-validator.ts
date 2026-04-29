@@ -30,6 +30,22 @@ const SUPPORTED_COMMANDS = new Set([
   'waitForAnimationToEnd',
 ]);
 
+// Maestro commands that REQUIRE a non-empty payload — emitting them as a bare
+// YAML scalar makes Maestro's parser reject the entire suite (run #70 lost all
+// 28 flows because one flow had `- takeScreenshot` with no path).
+const COMMANDS_REQUIRING_PAYLOAD = new Set([
+  'takeScreenshot',
+  'tapOn',
+  'inputText',
+  'assertVisible',
+  'assertNotVisible',
+  'extendedWaitUntil',
+  'swipe',
+  'scrollUntilVisible',
+  'pressKey',
+  'eraseText',
+]);
+
 const MAX_REPEAT_TIMES = 20;
 
 const TEST_DOMAINS = [/example\.com$/i, /test\.com$/i, /test\.dev$/i, /localhost$/i, /\.test$/i];
@@ -108,6 +124,17 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
         severity: 'error',
         check: 'unsupported-command',
         message: `Unsupported Maestro command "${name}" — likely a hallucinated keyword`,
+      });
+      continue;
+    }
+
+    // 11b. Bare command that needs a payload — Maestro rejects the whole
+    // suite if even one flow has e.g. `- takeScreenshot` without a path.
+    if (COMMANDS_REQUIRING_PAYLOAD.has(name) && (payload === undefined || payload === null || payload === '')) {
+      issues.push({
+        severity: 'error',
+        check: 'bare-command-needs-payload',
+        message: `Command "${name}" requires a payload (e.g. \`${name}: "<value>"\`); a bare keyword fails Maestro's YAML parser and aborts every flow in the suite`,
       });
       continue;
     }
