@@ -40,6 +40,13 @@ const FLOW_RULES = `## Flow rules
   \`extendedWaitUntil: { visible: "<unique screen heading>", timeout: 10000 }\` and
   then tap a UNIQUE label nearby. If neither is possible, skip that interaction.
 - For text inputs: emit \`tapOn\` on the field FIRST, then \`inputText\` on the next line.
+- **NEVER emit a bare command for these — Maestro will reject the whole suite:**
+  \`tapOn\`, \`inputText\`, \`assertVisible\`, \`assertNotVisible\`, \`extendedWaitUntil\`,
+  \`swipe\`, \`scrollUntilVisible\`, \`pressKey\`, \`takeScreenshot\`. Always include a value.
+- **Empty-field negative tests:** to test "user submits empty field" do NOT emit
+  \`- inputText\` with no value (that's invalid YAML for Maestro). Instead, either
+  (a) skip the inputText step entirely so the field stays empty, or (b) emit
+  \`- eraseText\` to clear an existing value before submitting.
 - Use only test-data emails (\`@example.com\`, \`@test.com\`) and 555-01XX phones — never real PII or production credentials.
 - Keep flows short and focused (8–15 commands typical). Long flows are fragile.`;
 

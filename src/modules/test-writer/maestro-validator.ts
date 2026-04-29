@@ -33,6 +33,11 @@ const SUPPORTED_COMMANDS = new Set([
 // Maestro commands that REQUIRE a non-empty payload — emitting them as a bare
 // YAML scalar makes Maestro's parser reject the entire suite (run #70 lost all
 // 28 flows because one flow had `- takeScreenshot` with no path).
+//
+// Bare commands NOT in this list (`scroll`, `back`, `hideKeyboard`,
+// `launchApp`, `waitForAnimationToEnd`, `eraseText`) are valid in Maestro 1.39
+// without arguments. eraseText specifically: bare clears the focused field's
+// text; numeric arg erases that many characters. Both forms are legal.
 const COMMANDS_REQUIRING_PAYLOAD = new Set([
   'takeScreenshot',
   'tapOn',
@@ -43,7 +48,6 @@ const COMMANDS_REQUIRING_PAYLOAD = new Set([
   'swipe',
   'scrollUntilVisible',
   'pressKey',
-  'eraseText',
 ]);
 
 const MAX_REPEAT_TIMES = 20;

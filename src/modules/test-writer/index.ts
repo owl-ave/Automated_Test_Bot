@@ -30,43 +30,68 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
     }));
     const runIssues = validateRun(validated);
 
-    const blockingErrors = validated.flatMap((f) =>
-      f.issues.filter((i) => i.severity === 'error').map((i) => `${f.scenario}: [${i.check}] ${i.message}`),
-    );
-    if (blockingErrors.length > 0) {
-      logger.error('Maestro validator blocked submission', { errors: blockingErrors });
+    // Partition: clean flows go to BS, broken flows are dropped (not the whole
+    // suite). Old behaviour aborted the entire pipeline if any flow had an
+    // error — run #71 dropped 53 good flows because of 11 bad ones, which is
+    // worse than running the 53 and reporting "11 flows skipped: <reason>".
+    const cleanFlows: typeof validated = [];
+    const droppedFlows: { scenario: string; errors: string[] }[] = [];
+    for (const f of validated) {
+      const errs = f.issues.filter((i) => i.severity === 'error');
+      if (errs.length === 0) {
+        cleanFlows.push(f);
+      } else {
+        droppedFlows.push({
+          scenario: f.scenario,
+          errors: errs.map((i) => `[${i.check}] ${i.message}`),
+        });
+      }
+    }
+
+    if (droppedFlows.length > 0) {
+      logger.warn(`Validator dropped ${droppedFlows.length} flow(s); continuing with ${cleanFlows.length}`, {
+        dropped: droppedFlows,
+      });
+    }
+
+    if (cleanFlows.length === 0) {
       return {
         moduleName: 'TestWriter',
         status: 'error',
-        error: `Validator blocked ${blockingErrors.length} flow(s):\n${blockingErrors.join('\n')}`,
+        error: `Validator rejected all ${validated.length} flow(s); nothing to submit. First failure: ${
+          droppedFlows[0]?.scenario ?? 'unknown'
+        } — ${droppedFlows[0]?.errors.join('; ') ?? 'no detail'}`,
       };
     }
 
     const outputDir = path.join(process.cwd(), 'features', 'maestro');
     fs.mkdirSync(outputDir, { recursive: true });
-    for (const f of validated) {
+    for (const f of cleanFlows) {
       fs.writeFileSync(path.join(outputDir, f.fileName), f.yaml);
     }
 
     // Mutate context in-place so downstream BrowserStack/Reporter modules see
     // the validator-stamped flows (with issue lists attached).
-    context.maestroFlows = validated;
+    context.maestroFlows = cleanFlows;
 
     const totalWarnings =
-      validated.reduce((acc, f) => acc + f.issues.filter((i) => i.severity === 'warn').length, 0) + runIssues.length;
+      cleanFlows.reduce((acc, f) => acc + f.issues.filter((i) => i.severity === 'warn').length, 0) + runIssues.length;
     logger.log('Maestro flows validated and persisted', {
-      flows: validated.length,
+      flows: cleanFlows.length,
+      droppedFlowCount: droppedFlows.length,
       outputDir,
       warnings: totalWarnings,
     });
 
+    const status = droppedFlows.length > 0 ? 'warning' : 'success';
     return {
       moduleName: 'TestWriter',
-      status: 'success',
+      status,
       data: {
         outputDir,
-        flowCount: validated.length,
-        warnings: validated.flatMap((f) => f.issues).concat(runIssues),
+        flowCount: cleanFlows.length,
+        droppedFlows,
+        warnings: cleanFlows.flatMap((f) => f.issues).concat(runIssues),
       },
     };
   } catch (error) {
