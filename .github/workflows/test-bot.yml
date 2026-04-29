@@ -130,13 +130,16 @@ jobs:
           repositories: ${{ needs.detect.outputs.repo }}
 
       # ── 3. Checkout target repo ──
+      # fetch-depth: 0 so DiffParser can run `git diff main...PR-branch` locally.
+      # Without full history the merge-base lookup fails and we fall back to a
+      # GitHub API call on every run.
       - name: Checkout target repo
         uses: actions/checkout@v4
         with:
           repository: ${{ github.event.inputs.repo }}
           ref: ${{ github.event.inputs.pr_number != '0' && format('refs/pull/{0}/head', github.event.inputs.pr_number) || github.event.inputs.branch }}
           token: ${{ steps.generate-token.outputs.token }}
-          fetch-depth: 1
+          fetch-depth: 0
           path: target
 
       # ── 4. Setup environment ──

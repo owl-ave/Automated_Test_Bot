@@ -130,18 +130,24 @@ Respond ONLY with a JSON array, no explanation:
     return flows;
   }
 
+  // changedScreenNames are screen names already resolved from diff paths via the
+  // screen catalog (see AppAnalyzer.resolveChangedScreens). Match is exact
+  // (case-insensitive) — substring matching here was the source of the previous
+  // "no flows matched" fall-through that defeated PR-aware testing.
   identifyAffectedFlows(flows: Flow[], changedScreenNames: string[]): Flow[] {
+    const changed = new Set(changedScreenNames.map((s) => s.toLowerCase()));
     flows.forEach((flow) => {
-      flow.affectedByPr = flow.screens.some((s) =>
-        changedScreenNames.some((cs) => s.toLowerCase().includes(cs.toLowerCase())),
-      );
+      flow.affectedByPr = flow.screens.some((s) => changed.has(s.toLowerCase()));
     });
 
     const affected = flows.filter((f) => f.affectedByPr);
     if (affected.length > 0) return affected;
 
     // No flows matched changed files — return critical/high as fallback
-    logger.warn('No flows matched changed screens, falling back to high-priority flows');
+    logger.warn('No flows matched changed screens, falling back to high-priority flows', {
+      changedScreens: changedScreenNames,
+      flowCount: flows.length,
+    });
     const fallback = flows.filter((f) => f.priority === 'critical' || f.priority === 'high');
     return fallback.length > 0 ? fallback : flows;
   }

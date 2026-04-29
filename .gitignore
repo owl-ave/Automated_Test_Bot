@@ -11,6 +11,7 @@ dist/
 *.tsbuildinfo
 coverage/
 .nyc_output
+test-results/
 env
 .env1
 .DS_Store

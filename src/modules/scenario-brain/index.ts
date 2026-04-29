@@ -59,7 +59,16 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
       logger.log('Maestro flows generated (from PR diff)', { flows: flows.length });
     }
 
-    context.maestroFlows = filterAuthScenarios(flows, context.authConfig?.type);
+    const filtered = filterAuthScenarios(flows, context.authConfig?.type);
+    if (filtered.length < flows.length) {
+      logger.log('Auth scenarios filtered (no usable auth config)', {
+        before: flows.length,
+        after: filtered.length,
+        dropped: flows.length - filtered.length,
+        authConfigType: context.authConfig?.type ?? 'none',
+      });
+    }
+    context.maestroFlows = filtered;
     return { moduleName: 'ScenarioBrain', status: 'success', data: context.maestroFlows };
   } catch (error) {
     logger.error('Maestro flow generation failed', error);

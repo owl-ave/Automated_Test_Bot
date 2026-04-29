@@ -28,6 +28,7 @@ export class MaestroAuthor {
   async generateFromFlows(flows: Flow[], inputs: FeatureGenInputs): Promise<MaestroFlow[]> {
     const CONCURRENCY = 5;
     const out: MaestroFlow[] = [];
+    const duplicateLabels = computeDuplicateLabels(inputs.screens);
 
     const generateOne = async (flow: Flow): Promise<MaestroFlow[]> => {
       try {
@@ -41,6 +42,7 @@ export class MaestroAuthor {
           framework: inputs.framework,
           screens: flowScreens.map((s) => ({ name: s.name, elements: s.elements })),
           appId: inputs.appId,
+          duplicateLabels,
         });
         const response = await this.claudeClient.analyzeCode('', prompt);
         const parsed = this.parseFlowsJson(response, flow.name, inputs.appId);
@@ -66,12 +68,14 @@ export class MaestroAuthor {
     inputs: FeatureGenInputs,
   ): Promise<MaestroFlow[]> {
     const vocab = inputs.screens.flatMap((s) => s.elements);
+    const duplicateLabels = computeDuplicateLabels(inputs.screens);
     const prompt = getMaestroDiffPrompt({
       industry: inputs.industry,
       framework: inputs.framework,
       diffSummary,
       appId: inputs.appId,
       vocab,
+      duplicateLabels,
     });
     const response = await this.claudeClient.analyzeCode('', prompt);
     return this.parseFlowsJson(response, 'PR Changes', inputs.appId);
@@ -133,6 +137,33 @@ export class MaestroAuthor {
 function assembleFlowYaml(appId: string, body: string): string {
   const trimmed = body.replace(/^---\s*/m, '').trim();
   return `appId: ${JSON.stringify(appId)}\n---\n${trimmed}\n`;
+}
+
+// Counts every distinct element label across the whole screen catalog and
+// returns those that appear ≥3 times. The validator hard-blocks flows that
+// tap on labels with count ≥ 5; the prompt steers the model away from labels
+// at count ≥ 3 so it falls back to id-based or screen-anchored taps before
+// the validator has to reject the output.
+const DUPLICATE_LABEL_THRESHOLD = 3;
+function computeDuplicateLabels(screens: Screen[]): { label: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const screen of screens) {
+    for (const el of screen.elements) {
+      // Match the validator's lookup pool (text + ids), case-insensitive.
+      const candidates = [el.text, el.accessibilityId, el.resourceId, el.id].filter((s): s is string => Boolean(s));
+      const seenInElement = new Set<string>();
+      for (const c of candidates) {
+        const key = c.toLowerCase();
+        if (seenInElement.has(key)) continue;
+        seenInElement.add(key);
+        counts.set(c, (counts.get(c) || 0) + 1);
+      }
+    }
+  }
+  return Array.from(counts.entries())
+    .filter(([, count]) => count >= DUPLICATE_LABEL_THRESHOLD)
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count);
 }
 
 function slugify(s: string): string {

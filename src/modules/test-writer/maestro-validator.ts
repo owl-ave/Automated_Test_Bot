@@ -97,7 +97,7 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
 
   // Walk commands to gather more checks
   let assertionCount = 0;
-  const tapTargets: string[] = [];
+  const tapTargets: { value: string; kind: 'id' | 'text' }[] = [];
   for (const cmd of commands) {
     const { name, payload } = decodeCommand(cmd);
     if (!name) continue;
@@ -155,8 +155,8 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
 
     // Track tap targets for ambiguity check (#7)
     if (name === 'tapOn') {
-      const label = extractLabel(payload);
-      if (label) tapTargets.push(label);
+      const tap = extractTapTarget(payload);
+      if (tap) tapTargets.push(tap);
     }
   }
 
@@ -169,13 +169,27 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
     });
   }
 
-  // 7. Ambiguous selector — same label appears on ≥2 elements in the offline vocab.
-  // Surfaced as warning only: scanner over-counts (e.g. same label captured by both
-  // Text() and Label() regex), so this isn't reliable enough to block on.
+  // 7. Ambiguous selector — same label appears on multiple elements in the offline vocab.
+  //   - id-based taps (`tapOn: { id: "x" }`) are skipped: the AI is targeting a
+  //     specific accessibility identifier, which is unambiguous by construction.
+  //     If the id was hallucinated, Maestro fails at runtime — not our problem here.
+  //   - text-based taps with count 2–4: warn (scanner over-counts in some patterns,
+  //     so we don't block).
+  //   - text-based taps with count ≥ AMBIGUOUS_HARD_LIMIT: error. At this scale the
+  //     scanner-overcount caveat doesn't matter; "Done" matching 24 elements is
+  //     unambiguously a problem and Maestro will pick the wrong one most runs.
+  const AMBIGUOUS_HARD_LIMIT = 5;
   const vocab = collectVocab(ctx.codeAnalysis);
-  const labelCounts = countOccurrences(vocab, tapTargets);
+  const textTaps = tapTargets.filter((t) => t.kind === 'text').map((t) => t.value);
+  const labelCounts = countOccurrences(vocab, textTaps);
   for (const [label, count] of labelCounts) {
-    if (count >= 2) {
+    if (count >= AMBIGUOUS_HARD_LIMIT) {
+      issues.push({
+        severity: 'error',
+        check: 'ambiguous-selector',
+        message: `Label "${label}" matches ${count} elements across the app — text-based tap will fire on the wrong element. Use \`tapOn: { id: "<accessibilityId>" }\` or anchor with \`extendedWaitUntil\` on a unique screen heading first.`,
+      });
+    } else if (count >= 2) {
       issues.push({
         severity: 'warn',
         check: 'ambiguous-selector',
@@ -215,12 +229,15 @@ function decodeCommand(cmd: unknown): { name: string | null; payload: unknown } 
   return { name: null, payload: undefined };
 }
 
-function extractLabel(payload: unknown): string | null {
-  if (typeof payload === 'string') return payload;
+// Distinguishes `tapOn: { id: "..." }` from `tapOn: "..."` / `tapOn: { text: "..." }`.
+// Ambiguity only applies to text-label taps; id-based taps target a specific
+// accessibility id and are unambiguous by construction.
+function extractTapTarget(payload: unknown): { value: string; kind: 'id' | 'text' } | null {
+  if (typeof payload === 'string') return { value: payload, kind: 'text' };
   if (payload && typeof payload === 'object') {
     const p = payload as { text?: unknown; id?: unknown };
-    if (typeof p.text === 'string') return p.text;
-    if (typeof p.id === 'string') return p.id;
+    if (typeof p.id === 'string' && p.id) return { value: p.id, kind: 'id' };
+    if (typeof p.text === 'string' && p.text) return { value: p.text, kind: 'text' };
   }
   return null;
 }
