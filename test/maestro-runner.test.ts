@@ -1,4 +1,4 @@
-import { computePollTimeoutMs, MaestroBuildTimeoutError, mapBuildToResults, flattenTestcases, extractErrorString } from '../src/modules/browserstack/maestro-runner';
+import { computePollTimeoutMs, MaestroBuildTimeoutError, mapBuildToResults, flattenTestcases, extractErrorString, fetchCommandLogsError } from '../src/modules/browserstack/maestro-runner';
 import { MaestroPollConfig } from '../src/config/thresholds';
 import { Device } from '../src/config/devices';
 import axios from 'axios';
@@ -382,6 +382,222 @@ describe('flattenTestcases', () => {
       ],
     });
     expect(out![0].error).toBe('gate dismiss failed');
+  });
+});
+
+describe('fetchCommandLogsError', () => {
+  const auth = { username: 'u', password: 'p' };
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+  });
+
+  it('returns the first FAILED command\'s error.message — what the BS dashboard shows', async () => {
+    // Real shape captured from BS Maestro v2 commandlogs on 2026-04-29
+    // (build 4a664b06...). The session-details endpoint returned no inline
+    // error; the actionable string lives only in this URL.
+    mockedAxios.get.mockResolvedValueOnce({
+      data: [
+        { command: { defineVariablesCommand: {} }, metadata: { description: 'Define variables', status: 'COMPLETED' } },
+        { command: { applyConfigurationCommand: {} }, metadata: { description: 'Apply configuration', status: 'COMPLETED' } },
+        { command: { launchAppCommand: {} }, metadata: { description: 'Launch app', status: 'COMPLETED' } },
+        {
+          command: { assertConditionCommand: {} },
+          metadata: {
+            description: 'Assert that "Join the Waitlist" is visible',
+            status: 'FAILED',
+            error: { message: 'Assertion is false: "Join the Waitlist" is visible' },
+          },
+        },
+      ],
+    });
+    const error = await fetchCommandLogsError('https://api.browserstack.com/.../commandlogs', auth);
+    expect(error).toBe('Assertion is false: "Join the Waitlist" is visible');
+  });
+
+  it('handles error as a plain string (older shape)', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: [
+        { command: {}, metadata: { description: 'tap', status: 'FAILED', error: 'Tap target not found' } },
+      ],
+    });
+    expect(await fetchCommandLogsError('https://example/cmd', auth)).toBe('Tap target not found');
+  });
+
+  it('returns undefined when no FAILED command exists', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: [{ metadata: { status: 'COMPLETED' } }, { metadata: { status: 'COMPLETED' } }],
+    });
+    expect(await fetchCommandLogsError('https://example/cmd', auth)).toBeUndefined();
+  });
+
+  it('returns undefined when the FAILED command has no extractable error', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: [{ metadata: { description: 'tap', status: 'FAILED' } }],
+    });
+    expect(await fetchCommandLogsError('https://example/cmd', auth)).toBeUndefined();
+  });
+
+  it('returns undefined on network failure (best-effort, never throws)', async () => {
+    mockedAxios.get.mockRejectedValueOnce(new Error('connection reset'));
+    expect(await fetchCommandLogsError('https://example/cmd', auth)).toBeUndefined();
+  });
+
+  it('returns undefined on malformed (non-array) response', async () => {
+    mockedAxios.get.mockResolvedValueOnce({ data: { not: 'an array' } });
+    expect(await fetchCommandLogsError('https://example/cmd', auth)).toBeUndefined();
+  });
+});
+
+describe('mapBuildToResults — fetches commandlogs for failed testcases without inline errors', () => {
+  const auth = { username: 'u', password: 'p' };
+  const devices: Device[] = [
+    { name: 'iPhone 17 Pro', platform: 'iOS', os_version: '26.2', device: 'iPhone 17 Pro', browserstack_device_name: 'iPhone 17 Pro' },
+  ];
+
+  beforeEach(() => {
+    mockedAxios.get.mockReset();
+  });
+
+  it('falls back to commandlogs when the testcase has no inline error (Nola PR#8 repro)', async () => {
+    // 1st GET: session details — no inline error fields, but maestro_commands URL present
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        status: 'failed',
+        testcases: {
+          data: [
+            {
+              class: 'flow',
+              testcases: [
+                {
+                  name: 'flow',
+                  status: 'failed',
+                  duration: 17.76,
+                  video: 'https://video',
+                  maestro_commands: 'https://api.browserstack.com/.../tests/abc/commandlogs',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    // 2nd GET: commandlogs — has the real error message
+    mockedAxios.get.mockResolvedValueOnce({
+      data: [
+        {
+          metadata: {
+            description: 'Assert that "Join the Waitlist" is visible',
+            status: 'FAILED',
+            error: { message: 'Assertion is false: "Join the Waitlist" is visible' },
+          },
+        },
+      ],
+    });
+
+    const results = await mapBuildToResults(
+      'build-x',
+      {
+        status: 'failed',
+        devices: [
+          {
+            device: 'iPhone 17 Pro-26.2',
+            sessions: [{ id: 'sess-1', status: 'failed', testcases: { data: [] } }],
+          },
+        ],
+      },
+      auth,
+      devices,
+    );
+
+    expect(results).toHaveLength(1);
+    expect(results[0].error).toBe('Assertion is false: "Join the Waitlist" is visible');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    expect(mockedAxios.get.mock.calls[1][0]).toBe('https://api.browserstack.com/.../tests/abc/commandlogs');
+  });
+
+  it('does NOT fetch commandlogs for passing testcases (saves a network call per pass)', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        status: 'passed',
+        testcases: {
+          data: [
+            {
+              class: 'flow',
+              testcases: [
+                {
+                  name: 'flow',
+                  status: 'passed',
+                  duration: 5,
+                  video: 'https://video',
+                  maestro_commands: 'https://api.browserstack.com/.../commandlogs',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const results = await mapBuildToResults(
+      'build-y',
+      {
+        status: 'passed',
+        devices: [
+          {
+            device: 'iPhone 17 Pro-26.2',
+            sessions: [{ id: 'sess-2', status: 'passed', testcases: { data: [] } }],
+          },
+        ],
+      },
+      auth,
+      devices,
+    );
+
+    expect(results[0].status).toBe('pass');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1); // session details only — no commandlogs fetch
+  });
+
+  it('does NOT fetch commandlogs when the testcase already has an inline error', async () => {
+    mockedAxios.get.mockResolvedValueOnce({
+      data: {
+        status: 'failed',
+        testcases: {
+          data: [
+            {
+              class: 'flow',
+              testcases: [
+                {
+                  name: 'flow',
+                  status: 'failed',
+                  duration: 5,
+                  error: 'inline error already present',
+                  maestro_commands: 'https://api.browserstack.com/.../commandlogs',
+                },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    const results = await mapBuildToResults(
+      'build-z',
+      {
+        status: 'failed',
+        devices: [
+          {
+            device: 'iPhone 17 Pro-26.2',
+            sessions: [{ id: 'sess-3', status: 'failed', testcases: { data: [] } }],
+          },
+        ],
+      },
+      auth,
+      devices,
+    );
+
+    expect(results[0].error).toBe('inline error already present');
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
   });
 });
 

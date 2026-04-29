@@ -270,19 +270,68 @@ export async function mapBuildToResults(
       // Per-testcase results: each Maestro flow becomes its own TestResult so
       // the PR comment can link the flow's video and error individually.
       for (const tc of flatTcs) {
+        const status = mapStatus(tc.status);
+        // BS Maestro v2's session-details endpoint stopped returning inline
+        // testcase errors at some point — the actual "Assertion is false: …"
+        // message lives in the per-testcase commandlogs URL. Fetch it lazily
+        // only for failures missing an inline error, so passing flows don't
+        // pay the network cost.
+        let error = tc.error;
+        if (!error && status !== 'pass' && tc.commandLogsUrl) {
+          error = await fetchCommandLogsError(tc.commandLogsUrl, auth);
+        }
         results.push({
           scenario: tc.name || device.device || 'flow',
-          status: mapStatus(tc.status),
+          status,
           device: deviceLabel,
           sessionId: session.id,
           duration: typeof tc.duration === 'number' ? Math.round(tc.duration * 1000) : 0,
           videoUrl: tc.video || sessionVideoUrl,
-          error: tc.error || (mapStatus(tc.status) !== 'pass' ? sessionError : undefined),
+          error: error || (status !== 'pass' ? sessionError : undefined),
         });
       }
     }
   }
   return results;
+}
+
+// Fetches a BS Maestro commandlogs JSON and returns the first failed command's
+// `metadata.error.message` — this is the same string the BS dashboard shows
+// (e.g. `Assertion is false: "Join the Waitlist" is visible`). Best-effort:
+// any network/parse failure returns undefined so the caller can fall through
+// to the session-level error. Capped at 1MB and 10s to keep the per-testcase
+// cost bounded.
+export async function fetchCommandLogsError(
+  url: string,
+  auth: { username: string; password: string },
+): Promise<string | undefined> {
+  try {
+    const res = await axios.get(url, {
+      auth,
+      timeout: 10_000,
+      maxContentLength: 1024 * 1024,
+      responseType: 'json',
+      validateStatus: (s) => s >= 200 && s < 300,
+    });
+    const data = res.data;
+    if (!Array.isArray(data)) return undefined;
+    for (const cmd of data) {
+      const meta = (cmd as { metadata?: unknown })?.metadata as
+        | { status?: unknown; error?: unknown; description?: unknown }
+        | undefined;
+      if (!meta || typeof meta !== 'object') continue;
+      if (typeof meta.status !== 'string' || meta.status.toUpperCase() !== 'FAILED') continue;
+      const message = extractErrorString(meta.error);
+      if (message) return message;
+    }
+    return undefined;
+  } catch (err) {
+    logger.warn('Failed to fetch Maestro commandlogs for testcase error', {
+      url,
+      error: String(err),
+    });
+    return undefined;
+  }
 }
 
 interface FlatTestcase {
@@ -291,6 +340,12 @@ interface FlatTestcase {
   error?: string;
   video?: string;
   duration?: number;
+  // BS Maestro v2 returns this URL per testcase. The session-details endpoint
+  // does not include error messages on failed testcases — we have to fetch
+  // this URL to recover the actual "Assertion is false: …" message that the
+  // BrowserStack dashboard displays. Captured here so mapBuildToResults can
+  // do that fetch lazily, only for failed testcases that lack an inline error.
+  commandLogsUrl?: string;
 }
 
 // BrowserStack's Maestro v2 session-details endpoint returns `testcases` in
@@ -311,6 +366,7 @@ export function flattenTestcases(raw: unknown): FlatTestcase[] | null {
         error: extractErrorString(tc.error),
         video: typeof tc.video === 'string' ? tc.video : typeof tc.video_url === 'string' ? tc.video_url : undefined,
         duration: typeof tc.duration === 'number' ? tc.duration : undefined,
+        commandLogsUrl: typeof tc.maestro_commands === 'string' ? tc.maestro_commands : undefined,
       }));
   }
   if (!raw || typeof raw !== 'object') return null;
@@ -331,6 +387,7 @@ export function flattenTestcases(raw: unknown): FlatTestcase[] | null {
         error: extractErrorString(t.error),
         video: typeof t.video === 'string' ? t.video : typeof t.video_url === 'string' ? t.video_url : undefined,
         duration: typeof t.duration === 'number' ? t.duration : undefined,
+        commandLogsUrl: typeof t.maestro_commands === 'string' ? t.maestro_commands : undefined,
       });
     }
   }
