@@ -8,6 +8,7 @@ import { Device } from '../../config/devices';
 import { MaestroFlow, TestResult } from '../../types';
 import { Logger } from '../../utils/logger';
 import { getBrowserStackConfig } from '../../config/browserstack';
+import { getThresholds, MaestroPollConfig } from '../../config/thresholds';
 
 // REST endpoints for BrowserStack's Maestro v2 API. Confirmed from:
 //   https://www.browserstack.com/docs/app-automate/api-reference/maestro/apps
@@ -22,8 +23,20 @@ const sessionDetailsUrl = (buildId: string, sessionId: string) => `${BASE}/build
 
 const logger = new Logger('MaestroRunner');
 
-const POLL_INTERVAL_MS = 5_000;
-const POLL_TIMEOUT_MS = 12 * 60_000; // 12 min hard cap — well over the 2-3 min target
+// Thrown by pollBuildUntilDone when a build doesn't reach a terminal state in time.
+// runWithRetry checks for this class and skips retry — re-triggering would orphan
+// the in-flight build on BrowserStack and burn quota without producing results.
+export class MaestroBuildTimeoutError extends Error {
+  constructor(public readonly buildId: string, public readonly elapsedMs: number) {
+    super(`Maestro build ${buildId} did not finish within ${Math.round(elapsedMs / 1000)}s`);
+    this.name = 'MaestroBuildTimeoutError';
+  }
+}
+
+// flows: drives the dynamic poll deadline (per-flow budget + minimum + acquisition buffer)
+export function computePollTimeoutMs(flowCount: number, cfg: MaestroPollConfig): number {
+  return Math.max(cfg.minTimeoutMs, flowCount * cfg.perFlowBudgetMs) + cfg.deviceAcquisitionBufferMs;
+}
 
 export interface RunMaestroOptions {
   androidAppUrl?: string;
@@ -50,6 +63,7 @@ export async function runMaestro(opts: RunMaestroOptions): Promise<TestResult[]>
     logger.log('Test suite uploaded', { testSuiteUrl });
 
     // Fire Android + iOS builds in parallel — wall-clock = max(android, ios)
+    const pollCfg = getThresholds().maestroPoll;
     const platformRuns: Promise<TestResult[]>[] = [];
     if (opts.androidAppUrl && opts.androidDevices.length > 0) {
       platformRuns.push(
@@ -58,6 +72,8 @@ export async function runMaestro(opts: RunMaestroOptions): Promise<TestResult[]>
           appUrl: opts.androidAppUrl,
           testSuiteUrl,
           devices: opts.androidDevices,
+          flowCount: opts.flows.length,
+          pollCfg,
           project: opts.project,
           buildName: opts.buildName,
           auth,
@@ -71,6 +87,8 @@ export async function runMaestro(opts: RunMaestroOptions): Promise<TestResult[]>
           appUrl: opts.iosAppUrl,
           testSuiteUrl,
           devices: opts.iosDevices,
+          flowCount: opts.flows.length,
+          pollCfg,
           project: opts.project,
           buildName: opts.buildName,
           auth,
@@ -90,6 +108,8 @@ interface RunPlatformInput {
   appUrl: string;
   testSuiteUrl: string;
   devices: Device[];
+  flowCount: number;
+  pollCfg: MaestroPollConfig;
   project?: string;
   buildName?: string;
   auth: { username: string; password: string };
@@ -109,11 +129,16 @@ async function runPlatform(input: RunPlatformInput): Promise<TestResult[]> {
   if (input.project) body.project = input.project;
   if (input.buildName) body.buildName = input.buildName;
 
-  logger.log(`${platform} build: triggering`, { devices: deviceStrings });
+  const timeoutMs = computePollTimeoutMs(input.flowCount, input.pollCfg);
+  logger.log(`${platform} build: triggering`, {
+    devices: deviceStrings,
+    flowCount: input.flowCount,
+    timeoutSec: Math.round(timeoutMs / 1000),
+  });
   const buildId = await triggerBuild(input.buildUrl, body, input.auth);
   logger.log(`${platform} build: triggered`, { buildId });
 
-  const final = await pollBuildUntilDone(buildId, input.auth);
+  const final = await pollBuildUntilDone(buildId, input.auth, timeoutMs, input.pollCfg, platform);
   logger.log(`${platform} build: done`, { buildId, status: final.status });
 
   return mapBuildToResults(buildId, final, input.auth, input.devices);
@@ -133,8 +158,15 @@ async function triggerBuild(
 async function pollBuildUntilDone(
   buildId: string,
   auth: { username: string; password: string },
+  timeoutMs: number,
+  cfg: MaestroPollConfig,
+  platform: string,
 ): Promise<MaestroBuildResponse> {
-  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let lastProgressLogAt = startedAt;
+  let lastStatus = '';
+
   while (Date.now() < deadline) {
     const res = await axios.get(buildStatusUrl(buildId), { auth, timeout: 30_000 });
     const data = res.data as MaestroBuildResponse;
@@ -142,9 +174,46 @@ async function pollBuildUntilDone(
     if (status === 'done' || status === 'passed' || status === 'failed' || status === 'error' || status === 'timeout') {
       return data;
     }
-    await sleep(POLL_INTERVAL_MS);
+    lastStatus = status;
+    const now = Date.now();
+    if (now - lastProgressLogAt >= cfg.progressLogIntervalMs) {
+      logger.log(`${platform} build: polling`, {
+        buildId,
+        status: status || 'unknown',
+        elapsedSec: Math.round((now - startedAt) / 1000),
+        timeoutSec: Math.round(timeoutMs / 1000),
+      });
+      lastProgressLogAt = now;
+    }
+    await sleep(cfg.intervalMs);
   }
-  throw new Error(`Maestro build ${buildId} did not finish within ${POLL_TIMEOUT_MS / 1000}s`);
+
+  const elapsedMs = Date.now() - startedAt;
+  logger.error(`${platform} build: timed out`, {
+    buildId,
+    elapsedSec: Math.round(elapsedMs / 1000),
+    lastStatus: lastStatus || 'unknown',
+  });
+  await cancelBuildBestEffort(buildId, auth);
+  throw new MaestroBuildTimeoutError(buildId, elapsedMs);
+}
+
+// BrowserStack Maestro v2 supports DELETE on the build endpoint to abort an
+// in-flight run. Best-effort: we still abandon if the cancel call fails. The
+// buildId is logged either way so a human can clean up via the BS dashboard.
+async function cancelBuildBestEffort(
+  buildId: string,
+  auth: { username: string; password: string },
+): Promise<void> {
+  try {
+    await axios.delete(buildStatusUrl(buildId), { auth, timeout: 10_000 });
+    logger.log('Maestro build cancelled', { buildId });
+  } catch (err) {
+    logger.warn('Build cancellation failed; investigate manually on BS dashboard', {
+      buildId,
+      error: String(err),
+    });
+  }
 }
 
 async function mapBuildToResults(

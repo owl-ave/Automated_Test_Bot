@@ -5,6 +5,17 @@ export interface RetryConfig {
   maxDelayMs: number;
 }
 
+// Sizes the BrowserStack Maestro poll deadline based on flow count + a fixed
+// device-acquisition buffer. Hardcoded 12-min timeout was too short for any
+// non-trivial flow count and led to retry-orphan loops; this scales linearly.
+export interface MaestroPollConfig {
+  minTimeoutMs: number;
+  perFlowBudgetMs: number;
+  deviceAcquisitionBufferMs: number;
+  intervalMs: number;
+  progressLogIntervalMs: number;
+}
+
 export interface Thresholds {
   // Performance thresholds
   appLaunchTimeMs: {
@@ -31,6 +42,9 @@ export interface Thresholds {
 
   // Retry configuration
   retry: RetryConfig;
+
+  // BrowserStack Maestro poll configuration
+  maestroPoll: MaestroPollConfig;
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = {
@@ -64,6 +78,17 @@ export const DEFAULT_THRESHOLDS: Thresholds = {
     backoffMultiplier: 2,
     maxDelayMs: 30000,
   },
+
+  // BrowserStack Maestro poll deadlines.
+  // Effective timeout = max(minTimeoutMs, flows * perFlowBudgetMs) + deviceAcquisitionBufferMs.
+  // For 28 flows: max(20m, 56m) + 5m = 61 min. Single device runs flows serially.
+  maestroPoll: {
+    minTimeoutMs: 20 * 60_000,
+    perFlowBudgetMs: 120_000,
+    deviceAcquisitionBufferMs: 5 * 60_000,
+    intervalMs: 5_000,
+    progressLogIntervalMs: 60_000,
+  },
 };
 
 export function getThresholds(): Thresholds {
@@ -88,6 +113,13 @@ export function getThresholds(): Thresholds {
       initialDelayMs: parseInt(process.env.RETRY_INITIAL_DELAY_MS || '2000', 10),
       backoffMultiplier: parseFloat(process.env.RETRY_BACKOFF_MULTIPLIER || '2'),
       maxDelayMs: parseInt(process.env.RETRY_MAX_DELAY_MS || '30000', 10),
+    },
+    maestroPoll: {
+      minTimeoutMs: parseInt(process.env.MAESTRO_POLL_MIN_TIMEOUT_MS || String(20 * 60_000), 10),
+      perFlowBudgetMs: parseInt(process.env.MAESTRO_POLL_PER_FLOW_BUDGET_MS || '120000', 10),
+      deviceAcquisitionBufferMs: parseInt(process.env.MAESTRO_POLL_DEVICE_BUFFER_MS || String(5 * 60_000), 10),
+      intervalMs: parseInt(process.env.MAESTRO_POLL_INTERVAL_MS || '5000', 10),
+      progressLogIntervalMs: parseInt(process.env.MAESTRO_POLL_PROGRESS_LOG_INTERVAL_MS || '60000', 10),
     },
   };
 }

@@ -1,5 +1,5 @@
 import { PipelineContext, ModuleResult, TestResult } from '../../types';
-import { runMaestro } from './maestro-runner';
+import { runMaestro, MaestroBuildTimeoutError } from './maestro-runner';
 import { getDevicesForPlatform, getMinimalDeviceSet } from './device-matrix';
 import { Logger } from '../../utils/logger';
 
@@ -102,6 +102,10 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
     };
   } catch (error) {
     logger.error('BrowserStack module failed', error);
+    // Let the timeout error escape with its type intact so runWithRetry can
+    // recognize it (instanceof check) and skip retrying. Wrapping it in a
+    // plain ModuleResult here would lose the class and trigger an orphan loop.
+    if (error instanceof MaestroBuildTimeoutError) throw error;
     return { moduleName: 'BrowserStack', status: 'error', error: String(error) };
   }
 }

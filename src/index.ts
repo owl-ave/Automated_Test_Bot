@@ -2,7 +2,8 @@ import * as dotenv from 'dotenv';
 import { PipelineContext, ModuleResult } from './types';
 import { runCodeReader } from './modules/code-reader';
 import { Logger } from './utils/logger';
-import { getThresholds, RetryConfig } from './config/thresholds';
+import { getThresholds } from './config/thresholds';
+import { runWithRetry } from './utils/retry';
 
 dotenv.config();
 
@@ -30,35 +31,6 @@ function stripScreenshots(data: unknown): unknown {
   return result;
 }
 
-// --- Orchestrator Resilience Utilities --- //
-
-async function runWithRetry(
-  moduleName: string,
-  fn: () => Promise<ModuleResult>,
-  config: RetryConfig = retryConfig,
-): Promise<ModuleResult> {
-  let delayMs = config.initialDelayMs;
-
-  for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
-    try {
-      const result = await fn();
-      if (result.status === 'error') {
-        throw new Error(result.error || 'Unknown error');
-      }
-      return result;
-    } catch (error) {
-      if (attempt === config.maxRetries) {
-        logger.error(`[${moduleName}] Failed after ${config.maxRetries} attempts`, error);
-        return { moduleName, status: 'error', error: String(error) };
-      }
-      logger.warn(`[${moduleName}] Attempt ${attempt} failed, retrying in ${delayMs}ms...`, error);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      delayMs = Math.min(delayMs * config.backoffMultiplier, config.maxDelayMs);
-    }
-  }
-  return { moduleName, status: 'error', error: 'Exceeded retries' };
-}
-
 /**
  * Executes a pipeline step. If isCritical is true, a failure aborts the entire pipeline.
  */
@@ -72,7 +44,7 @@ async function executeStep(
   logger.log(`---> Starting ${moduleName}...`);
   const startTime = Date.now();
 
-  const result: ModuleResult = useRetry ? await runWithRetry(moduleName, executable) : await executable();
+  const result: ModuleResult = useRetry ? await runWithRetry(moduleName, executable, retryConfig) : await executable();
   const durationMs = Date.now() - startTime;
 
   context.logs.push(`${moduleName} [${durationMs}ms]: ${result.status}`);
