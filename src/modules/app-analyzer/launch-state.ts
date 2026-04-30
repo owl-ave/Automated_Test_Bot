@@ -41,6 +41,34 @@ const ENTRY_POINT_HINTS = [
 
 const AUTH_SCREEN_NAME_RX = /login|signin|sign[_-]?in|signup|sign[_-]?up|register|onboard|welcome|splash|forgot|reset|otp|verify|auth/i;
 
+// Renders a screen's element vocabulary inline next to its name in the
+// launch-state prompt, so the AI can pick gate dismiss labels from real
+// strings that exist on the screen instead of guessing. Without this the AI
+// returned `preAuthGates: []` for LanguageGateView (Nola PR#8) — it knew the
+// screen was a gate but had no way to see "Continue" was the dismiss label.
+//
+// Cap at 6 elements per screen (preferring buttons over labels) to keep the
+// prompt under control even for forms with many fields. Screens with no
+// extractable elements get an empty suffix so the prompt stays compact.
+export function formatScreenElements(screen: Screen): string {
+  if (!screen.elements || screen.elements.length === 0) return '';
+  const buttons: string[] = [];
+  const texts: string[] = [];
+  for (const e of screen.elements) {
+    const label = (e.text ?? e.id ?? '').trim();
+    if (!label) continue;
+    if (e.type === 'button' || e.type === 'control' || e.type === 'textfield') {
+      if (buttons.length < 6 && !buttons.includes(label)) buttons.push(label);
+    } else {
+      if (texts.length < 4 && !texts.includes(label)) texts.push(label);
+    }
+  }
+  const parts: string[] = [];
+  if (buttons.length > 0) parts.push(`buttons: ${buttons.map((b) => `"${b}"`).join(', ')}`);
+  if (texts.length > 0) parts.push(`texts: ${texts.map((t) => `"${t}"`).join(', ')}`);
+  return parts.length === 0 ? '' : ` — ${parts.join('; ')}`;
+}
+
 // Reuse the shared deny-list so entry-point glob and screen scanner stay in
 // lock-step — see src/modules/code-reader/skip-dirs.ts for the rationale.
 const ENTRY_POINT_GLOB_SKIP_DIRS = BUILD_VENDOR_SKIP_DIRS;
@@ -180,7 +208,7 @@ export class LaunchStateDetector {
   ): Promise<LaunchState | null> {
     const screenList = screens
       .slice(0, 60)
-      .map((s) => `- ${s.name} [${s.type}]`)
+      .map((s) => `- ${s.name} [${s.type}]${formatScreenElements(s)}`)
       .join('\n');
     const entryPointSection = entryPoints.length === 0
       ? '(no entry-point files found — infer from screen names)'
@@ -205,7 +233,7 @@ Identify:
 5. The authentication mechanism, if you can tell.
 6. The ORDERED sequence of gate screens the user passes through between cold launch and the first screen where they can make a navigation choice. Include splash screens, language pickers, "Get Started" intros, tracking-permission prompts, etc. For each gate, identify how it is dismissed:
    - "auto" if it disappears on its own (animated splash, timed redirect)
-   - "tap" with the visible label of the primary button (e.g. "Continue", "Get Started", "Allow")
+   - "tap" with the visible label of the primary button (e.g. "Continue", "Get Started", "Allow"). The label MUST appear verbatim in that screen's listed buttons/texts above — do not invent labels not in the list.
    - "system-permission" if it is an OS dialog (notification permission, location, tracking) — set "allow" to true unless denying is required
    For "tap" gates, optionally include "waitForVisible" — a unique text on that gate screen used to confirm it is up before tapping.
 

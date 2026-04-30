@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { LaunchStateDetector, parseAndValidateGates } from '../src/modules/app-analyzer/launch-state';
+import { LaunchStateDetector, parseAndValidateGates, formatScreenElements } from '../src/modules/app-analyzer/launch-state';
 import { ClaudeClient } from '../src/ai/claude-client';
 import { Element, Screen } from '../src/types';
 
@@ -320,5 +320,106 @@ describe('LaunchStateDetector entry-point discovery', () => {
 
     expect(client.lastPrompt).toContain('AppDelegate.swift');
     expect(client.lastPrompt).toContain('classic AppDelegate');
+  });
+});
+
+// Without the per-screen element vocab the AI had to guess what label
+// dismisses each gate. For LanguageGateView it returned `preAuthGates: []`
+// because it never saw "Continue" anywhere in the prompt. These tests pin
+// the vocab-rendering helper.
+describe('formatScreenElements', () => {
+  it('renders buttons and texts inline so the AI can quote them as gate labels', () => {
+    const out = formatScreenElements({
+      name: 'LanguageGateView',
+      path: 'x.swift',
+      type: 'swiftui-view',
+      elements: [
+        { id: 'continue', type: 'button', text: 'Continue' },
+        { id: 'english', type: 'button', text: 'English' },
+        { id: 'choose_your_language', type: 'text', text: 'Choose your language' },
+      ],
+    });
+    expect(out).toContain('"Continue"');
+    expect(out).toContain('"English"');
+    expect(out).toContain('"Choose your language"');
+    expect(out).toMatch(/buttons:.*texts:/);
+  });
+
+  it('returns empty string for screens with no elements (keeps prompt compact)', () => {
+    const out = formatScreenElements({
+      name: 'EmptyView',
+      path: 'x.swift',
+      type: 'swiftui-view',
+      elements: [],
+    });
+    expect(out).toBe('');
+  });
+
+  it('caps buttons at 6 and texts at 4 to bound prompt size', () => {
+    const buttons = Array.from({ length: 10 }, (_, i) => ({
+      id: `b${i}`,
+      type: 'button',
+      text: `Btn${i}`,
+    }));
+    const out = formatScreenElements({
+      name: 'BigForm',
+      path: 'x.swift',
+      type: 'swiftui-view',
+      elements: buttons,
+    });
+    expect(out).toContain('"Btn0"');
+    expect(out).toContain('"Btn5"');
+    expect(out).not.toContain('"Btn6"');
+    expect(out).not.toContain('"Btn9"');
+  });
+});
+
+describe('LaunchStateDetector prompt rendering', () => {
+  let tmp: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prompt-render-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  class CapturingClient extends ClaudeClient {
+    public lastPrompt = '';
+    constructor() { super(); }
+    override async analyzeCode(_code: string, instruction: string): Promise<string> {
+      this.lastPrompt = instruction;
+      return '{"initialScreen":"X","requiresAuth":false,"authScreens":[],"preAuthGates":[]}';
+    }
+  }
+
+  it('includes per-screen button labels in the prompt so the AI can pick valid gate dismiss labels', async () => {
+    fs.mkdirSync(path.join(tmp, 'ios'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'ios', 'fake.xcodeproj'), '');
+    const client = new CapturingClient();
+    const detector = new LaunchStateDetector(client);
+    await detector.detect(
+      [
+        {
+          name: 'LanguageGateView',
+          path: 'ios/Shared/LanguageGateView.swift',
+          type: 'swiftui-view',
+          elements: [
+            { id: 'continue', type: 'button', text: 'Continue' },
+            { id: 'choose_your_language', type: 'text', text: 'Choose your language' },
+          ],
+        },
+      ],
+      'swift',
+      path.join(tmp, 'ios'),
+    );
+
+    expect(client.lastPrompt).toContain('LanguageGateView [swiftui-view]');
+    expect(client.lastPrompt).toContain('"Continue"');
+    expect(client.lastPrompt).toContain('"Choose your language"');
+    // The tightened instruction must also be in the prompt — without it the AI
+    // sometimes still emitted invented labels even when the vocab was there.
+    expect(client.lastPrompt).toContain('do not invent labels not in the list');
   });
 });
