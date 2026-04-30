@@ -203,28 +203,23 @@ export function validateMaestroFlow(flow: MaestroFlow, ctx: ValidatorContext): M
   // 7. Ambiguous selector — same label appears on multiple elements in the offline vocab.
   //   - id-based taps (`tapOn: { id: "x" }`) are skipped: the AI is targeting a
   //     specific accessibility identifier, which is unambiguous by construction.
-  //     If the id was hallucinated, Maestro fails at runtime — not our problem here.
-  //   - text-based taps with count 2–4: warn (scanner over-counts in some patterns,
-  //     so we don't block).
-  //   - text-based taps with count ≥ AMBIGUOUS_HARD_LIMIT: error. At this scale the
-  //     scanner-overcount caveat doesn't matter; "Done" matching 24 elements is
-  //     unambiguously a problem and Maestro will pick the wrong one most runs.
-  const AMBIGUOUS_HARD_LIMIT = 5;
+  //   - text-based taps that match more than one source element: surface as a
+  //     warning so the dropped-flow report flags it, but never block submission.
+  //     Static source counts overestimate the runtime ambiguity (SwiftUI/RN
+  //     reuse the same string across screens but only one is visible at a time);
+  //     blocking on the static count was rejecting flows that Maestro could
+  //     actually execute correctly. If Maestro picks the wrong element at
+  //     runtime, the test fails and the failure surfaces in the PR comment —
+  //     which is a far better signal than zero flows ever running.
   const vocab = collectVocab(ctx.codeAnalysis);
   const textTaps = tapTargets.filter((t) => t.kind === 'text').map((t) => t.value);
   const labelCounts = countOccurrences(vocab, textTaps);
   for (const [label, count] of labelCounts) {
-    if (count >= AMBIGUOUS_HARD_LIMIT) {
-      issues.push({
-        severity: 'error',
-        check: 'ambiguous-selector',
-        message: `Label "${label}" matches ${count} elements across the app — text-based tap will fire on the wrong element. Use \`tapOn: { id: "<accessibilityId>" }\` or anchor with \`extendedWaitUntil\` on a unique screen heading first.`,
-      });
-    } else if (count >= 2) {
+    if (count >= 2) {
       issues.push({
         severity: 'warn',
         check: 'ambiguous-selector',
-        message: `Label "${label}" matches ${count} elements in source — Maestro may pick the wrong one`,
+        message: `Label "${label}" matches ${count} elements in source — Maestro may pick the wrong one. Prefer \`tapOn: { id: "<accessibilityId>" }\` or anchor with \`extendedWaitUntil\` on a unique screen heading first.`,
       });
     }
   }

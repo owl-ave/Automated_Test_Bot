@@ -91,7 +91,9 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
   const logger = new Logger('ScenarioBrain');
 
   if (!context.codeAnalysis || !process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return { moduleName: 'ScenarioBrain', status: 'error', error: 'Missing analysis or auth token' };
+    logger.warn('Missing analysis or CLAUDE_CODE_OAUTH_TOKEN — skipping ScenarioBrain');
+    context.maestroFlows = [];
+    return { moduleName: 'ScenarioBrain', status: 'warning', error: 'Missing analysis or auth token' };
   }
 
   try {
@@ -101,12 +103,16 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
     const appIds = resolveAppId(context.codeAnalysis.framework, context.mobilePath);
     const appId = appIds.android ?? appIds.ios;
     if (!appId) {
+      logger.warn(
+        'Could not resolve appId (Android applicationId / iOS CFBundleIdentifier). ' +
+        'Skipping flow generation. Set MAESTRO_ANDROID_APP_ID / MAESTRO_IOS_APP_ID to override.',
+      );
+      context.maestroFlows = [];
       return {
         moduleName: 'ScenarioBrain',
-        status: 'error',
-        error:
-          'Could not resolve appId (Android applicationId or iOS CFBundleIdentifier) from source. ' +
-          'Set MAESTRO_ANDROID_APP_ID and/or MAESTRO_IOS_APP_ID env vars to override.',
+        status: 'warning',
+        error: 'appId unresolved',
+        data: [],
       };
     }
 
@@ -208,7 +214,11 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
     context.maestroFlows = filtered;
     return { moduleName: 'ScenarioBrain', status: 'success', data: context.maestroFlows };
   } catch (error) {
+    // Claude API hiccup, JSON parse fail, etc. Don't crash the pipeline —
+    // surface as warning so TestWriter sees zero flows and Reporter posts
+    // the failure reason on the PR.
     logger.error('Maestro flow generation failed', error);
-    return { moduleName: 'ScenarioBrain', status: 'error', error: String(error) };
+    context.maestroFlows = [];
+    return { moduleName: 'ScenarioBrain', status: 'warning', error: String(error) };
   }
 }

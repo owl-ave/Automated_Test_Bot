@@ -16,7 +16,9 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
 
   const flows = context.maestroFlows ?? [];
   if (!context.codeAnalysis) {
-    return { moduleName: 'TestWriter', status: 'error', error: 'codeAnalysis missing' };
+    logger.warn('codeAnalysis missing — skipping TestWriter (CodeReader likely failed earlier)');
+    context.maestroFlows = [];
+    return { moduleName: 'TestWriter', status: 'warning', error: 'codeAnalysis missing — upstream failure' };
   }
   // Zero flows is a legitimate state (PR touches no testable surface, or every
   // generated flow needed creds the bot doesn't have). Don't abort the pipeline —
@@ -109,7 +111,10 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
       },
     };
   } catch (error) {
+    // Validator/filesystem unexpectedly threw. Surface as warning rather than
+    // critical so Reporter still runs and posts the failure reason on the PR.
     logger.error('Maestro flow validation/write failed', error);
-    return { moduleName: 'TestWriter', status: 'error', error: String(error) };
+    context.maestroFlows = [];
+    return { moduleName: 'TestWriter', status: 'warning', error: String(error) };
   }
 }

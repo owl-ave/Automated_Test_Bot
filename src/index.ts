@@ -44,7 +44,18 @@ async function executeStep(
   logger.log(`---> Starting ${moduleName}...`);
   const startTime = Date.now();
 
-  const result: ModuleResult = useRetry ? await runWithRetry(moduleName, executable, retryConfig) : await executable();
+  // Modules occasionally throw instead of returning a ModuleResult (uncaught
+  // null deref, network library throwing, etc.). Treat that the same as a
+  // returned-error result: log it, mark the step failed, then let the
+  // critical/non-critical branch below decide whether to abort. Without this,
+  // an uncaught throw bubbles past every module's try/catch straight to the
+  // top-level catch, skipping Reporter and giving the PR zero feedback.
+  let result: ModuleResult;
+  try {
+    result = useRetry ? await runWithRetry(moduleName, executable, retryConfig) : await executable();
+  } catch (err) {
+    result = { moduleName, status: 'error', error: err instanceof Error ? err.message : String(err) };
+  }
   const durationMs = Date.now() - startTime;
 
   context.logs.push(`${moduleName} [${durationMs}ms]: ${result.status}`);
@@ -244,19 +255,40 @@ async function main(): Promise<void> {
       }
     }
 
-    // 8. PR Reporter (Critical - always runs last to report all collected data)
-    const { runReporter } = await import('./modules/reporter');
-    await executeStep(context, 'Reporter', () => runReporter(context), true, true);
-
     logger.log('Pipeline execution totally complete. All modules executed robustly.', {
       pr: prNumber,
       results: context.logs.length,
     });
   } catch (error) {
     logger.error('Pipeline failed fatally midway.', error);
-    process.exit(1);
+    context.logs.push(`Pipeline aborted: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    // Reporter ALWAYS runs — even after a critical failure earlier in the pipeline.
+    // Without this, the user only sees a red GitHub Actions check with no PR comment
+    // explaining what failed. Reporter posts whatever moduleStatuses we collected so
+    // far, which includes the failure reason for the critical step.
+    try {
+      const { runReporter } = await import('./modules/reporter');
+      await executeStep(context, 'Reporter', () => runReporter(context), false, true);
+    } catch (reporterErr) {
+      logger.error('Reporter itself failed — PR will have no automated comment', reporterErr);
+    }
+
+    // Exit non-zero if any critical module errored, so GitHub Actions still flags the run.
+    const hadCriticalFailure = context.moduleStatuses.some(
+      (m) => m.status === 'error' && CRITICAL_MODULES.has(m.name),
+    );
+    if (hadCriticalFailure) process.exit(1);
   }
 }
+
+const CRITICAL_MODULES = new Set([
+  'CodeReader',
+  'AppAnalyzer',
+  'ScenarioBrain',
+  'TestWriter',
+  'BrowserStack',
+]);
 
 main().catch((err) => {
   logger.error('Pipeline crashed', err);

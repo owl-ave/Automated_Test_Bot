@@ -23,9 +23,12 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
     const androidAppUrl = context.appBuild?.androidAppUrl;
     const iosAppUrl = context.appBuild?.iosAppUrl;
     if (!androidAppUrl && !iosAppUrl) {
+      // Pipeline already gates BrowserStack on appBuild presence, so this only
+      // fires if appBuild was set but had empty URLs. Treat as warning so the
+      // pipeline still completes and Reporter can post the upstream failure.
       return {
         moduleName: 'BrowserStack',
-        status: 'error',
+        status: 'warning',
         error: 'No app URLs available. App build may have failed.',
       };
     }
@@ -106,6 +109,9 @@ export async function runBrowserStack(context: PipelineContext): Promise<ModuleR
     // recognize it (instanceof check) and skip retrying. Wrapping it in a
     // plain ModuleResult here would lose the class and trigger an orphan loop.
     if (error instanceof MaestroBuildTimeoutError) throw error;
-    return { moduleName: 'BrowserStack', status: 'error', error: String(error) };
+    // Surface as warning so Reporter still posts a PR comment with the failure
+    // reason. Individual test pass/fail is already captured in `results`; this
+    // catch-all only fires for unexpected exceptions in the runner itself.
+    return { moduleName: 'BrowserStack', status: 'warning', error: String(error) };
   }
 }
