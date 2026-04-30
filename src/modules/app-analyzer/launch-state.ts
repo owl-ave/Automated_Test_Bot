@@ -3,6 +3,7 @@ import * as path from 'path';
 import { LaunchState, PreAuthGate, PreAuthGateDismiss, Screen } from '../../types';
 import { ClaudeClient } from '../../ai/claude-client';
 import { safeJsonParse } from '../../ai/parse-json';
+import { BUILD_VENDOR_SKIP_DIRS } from '../code-reader/skip-dirs';
 import { Logger } from '../../utils/logger';
 
 const logger = new Logger('LaunchStateDetector');
@@ -40,21 +41,9 @@ const ENTRY_POINT_HINTS = [
 
 const AUTH_SCREEN_NAME_RX = /login|signin|sign[_-]?in|signup|sign[_-]?up|register|onboard|welcome|splash|forgot|reset|otp|verify|auth/i;
 
-// Directories the entry-point `**` glob must NOT recurse into. Without this,
-// a build dir like `ios/build/DerivedData/SourcePackages/checkouts/.../AppDelegate.swift`
-// (Firebase / GoogleDataTransport sample apps shipped inside SwiftPM checkouts)
-// gets picked up before the real routing files. Run from 2026-04-29 (Nola PR#8)
-// hit this — the AI received vendor sample app code as the "entry point" and
-// emitted no preauth gate. Hidden dirs (`.build`, `.git`) are already excluded
-// via the startsWith('.') check; this set covers the non-hidden cases.
-const ENTRY_POINT_GLOB_SKIP_DIRS = new Set([
-  'build',
-  'DerivedData',
-  'Pods',
-  'Carthage',
-  'vendor',
-  'node_modules',
-]);
+// Reuse the shared deny-list so entry-point glob and screen scanner stay in
+// lock-step — see src/modules/code-reader/skip-dirs.ts for the rationale.
+const ENTRY_POINT_GLOB_SKIP_DIRS = BUILD_VENDOR_SKIP_DIRS;
 
 export class LaunchStateDetector {
   private claudeClient: ClaudeClient;

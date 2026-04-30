@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CodeAnalysis, Screen, ApiEndpoint } from '../../types';
 import { FrameworkDetector } from './framework-detector';
+import { BUILD_VENDOR_SKIP_DIRS } from './skip-dirs';
 import { Logger } from '../../utils/logger';
 
 function slug(value: string): string {
@@ -390,7 +391,15 @@ export class RepoScanner {
       fs.readdirSync(dir).forEach((file) => {
         const fullPath = path.join(dir, file);
         if (fs.statSync(fullPath).isDirectory()) {
-          if (!file.includes('node_modules') && !file.startsWith('.') && !file.includes('dist')) {
+          // BUILD_VENDOR_SKIP_DIRS keeps SwiftPM/Pods/Carthage checkouts out of
+          // the screen list — Nola PR#8 had 100+ vendor screens leaking from
+          // ios/build/SourcePackages/checkouts/firebase-ios-sdk before this.
+          // `dist` is kept inline (RN-style build outputs sometimes named that).
+          if (
+            !BUILD_VENDOR_SKIP_DIRS.has(file)
+            && !file.startsWith('.')
+            && !file.includes('dist')
+          ) {
             files.push(...this.walkDir(fullPath));
           }
         } else {

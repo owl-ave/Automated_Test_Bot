@@ -189,6 +189,51 @@ struct WaitlistView: View {
       expect(alreadyHaveCode!.accessibilityId).toBeUndefined();
     });
 
+    // Run from 2026-04-29 (Nola PR#8, run id 25113423485) had 100+ vendor
+    // SDK swift files leaking from `ios/build/SourcePackages/checkouts/...`
+    // (Firebase, Sentry, Privy, etc.). They overwhelmed the 60-screen prompt
+    // slice and broke AI launch-state detection. This test pins the fix in
+    // walkDir that excludes build/Pods/Carthage/DerivedData/vendor.
+    it('skips vendor SDK files under build/SourcePackages and Pods (Nola PR#8 repro)', () => {
+      writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
+      // Real app screens
+      writeFile(tmpDir, 'app/HomeView.swift', `
+import SwiftUI
+struct HomeView: View { var body: some View { Text("Home") } }
+`);
+      writeFile(tmpDir, 'app/LanguageGateView.swift', `
+import SwiftUI
+struct LanguageGateView: View { var body: some View { Text("Choose your language") } }
+`);
+      // Vendor SDK noise — must NOT appear in the screens list
+      writeFile(tmpDir, 'build/SourcePackages/checkouts/firebase-ios-sdk/FirebaseAuth/Sources/Swift/Auth/AuthDefaultUIDelegate.swift', `
+import UIKit
+class AuthDefaultUIDelegate: UIViewController {}
+`);
+      writeFile(tmpDir, 'build/SourcePackages/checkouts/firebase-ios-sdk/FirebaseAuth/Sources/Swift/MultiFactor/MFALoginView.swift', `
+import SwiftUI
+struct MFALoginView: View { var body: some View { Text("MFA") } }
+`);
+      writeFile(tmpDir, 'build/DerivedData/SourcePackages/checkouts/sentry-cocoa/SampleApp/AppDelegate.swift', `
+import UIKit
+class AppDelegate: UIViewController {}
+`);
+      writeFile(tmpDir, 'Pods/Firebase/Auth/AuthViewController.swift', `
+import UIKit
+class AuthViewController: UIViewController {}
+`);
+      writeFile(tmpDir, 'Carthage/Checkouts/SomeSDK/Sample.swift', `
+import SwiftUI
+struct SampleView: View { var body: some View { Text("Sample") } }
+`);
+
+      const scanner = new RepoScanner(tmpDir);
+      const result = scanner.scan();
+      const names = result.screens.map((s) => s.name).sort();
+
+      expect(names).toEqual(['HomeView', 'LanguageGateView']);
+    });
+
     it('ignores non-screen Swift files', () => {
       writeFile(tmpDir, 'MyApp.xcodeproj/project.pbxproj', '');
       writeFile(tmpDir, 'NetworkManager.swift', `
