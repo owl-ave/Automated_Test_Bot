@@ -60,12 +60,21 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
     }
 
     if (cleanFlows.length === 0) {
+      // All flows had validator errors. This is the AI generating bad YAML
+      // (ambiguous selectors, missing appId, etc.) — a real quality issue, but
+      // not one that should fail the pipeline. Surface it as a warning so
+      // Reporter posts the dropped-flow reasons on the PR; aborting hides them
+      // and forces a re-run before the developer can see what went wrong.
+      const summary = `Validator rejected all ${validated.length} flow(s); nothing to submit. First failure: ${
+        droppedFlows[0]?.scenario ?? 'unknown'
+      } — ${droppedFlows[0]?.errors.join('; ') ?? 'no detail'}`;
+      logger.warn(summary);
+      context.maestroFlows = [];
       return {
         moduleName: 'TestWriter',
-        status: 'error',
-        error: `Validator rejected all ${validated.length} flow(s); nothing to submit. First failure: ${
-          droppedFlows[0]?.scenario ?? 'unknown'
-        } — ${droppedFlows[0]?.errors.join('; ') ?? 'no detail'}`,
+        status: 'warning',
+        error: summary,
+        data: { outputDir: null, flowCount: 0, droppedFlows, warnings: runIssues },
       };
     }
 
