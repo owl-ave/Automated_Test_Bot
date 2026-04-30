@@ -15,11 +15,16 @@ export async function runTestWriter(context: PipelineContext): Promise<ModuleRes
   const logger = new Logger('TestWriter');
 
   const flows = context.maestroFlows ?? [];
-  if (flows.length === 0) {
-    return { moduleName: 'TestWriter', status: 'error', error: 'No Maestro flows in context — ScenarioBrain produced nothing' };
-  }
   if (!context.codeAnalysis) {
     return { moduleName: 'TestWriter', status: 'error', error: 'codeAnalysis missing' };
+  }
+  // Zero flows is a legitimate state (PR touches no testable surface, or every
+  // generated flow needed creds the bot doesn't have). Don't abort the pipeline —
+  // let downstream skip and Reporter post a "no flows tested" comment.
+  if (flows.length === 0) {
+    logger.warn('No Maestro flows to write — pipeline will skip execution and report "no flows tested"');
+    context.maestroFlows = [];
+    return { moduleName: 'TestWriter', status: 'success', data: [] };
   }
 
   try {

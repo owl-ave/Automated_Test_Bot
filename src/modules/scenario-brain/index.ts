@@ -28,15 +28,37 @@ export function capFlowsByPriority(flows: Flow[], max: number): Flow[] {
   return sorted.slice(0, max);
 }
 
-const LOGIN_KEYWORDS = ['log in', 'login', 'sign in', 'sign up', 'register', 'authenticate', 'otp', 'biometric'];
+// Stem-based patterns so "logs in" / "logged in" / "signing up" match too.
+const LOGIN_PATTERNS: RegExp[] = [
+  /\blog(?:s|ged|ging)?[ -]?in\b/,
+  /\bsign(?:s|ed|ing)?[ -]?(?:in|up)\b/,
+  /\blogin\b/,
+  /\bsignup\b/,
+  /\bregister(?:s|ed|ing)?\b/,
+  /\bauthenticat(?:e|es|ed|ing|ion)\b/,
+  /\botp\b/,
+  /\bbiometric\b/,
+];
+// Scenarios that touch login screens but verify UI/validation/error behaviour
+// (rather than performing an actual auth handshake) are safe without creds —
+// e.g. "Login button shows error on empty submit", "Sign-in screen renders".
+const NEGATIVE_AUTH_KEYWORDS = [
+  'invalid', 'incorrect', 'wrong', 'empty', 'missing', 'no input',
+  'error', 'validation', 'visible', 'displayed', 'render', 'shows', 'shown',
+];
 
-function isLoginScenario(flow: MaestroFlow): boolean {
-  const text = (flow.feature + ' ' + flow.scenario + ' ' + flow.yaml).toLowerCase();
-  return LOGIN_KEYWORDS.some((kw) => text.includes(kw));
+// True if a scenario *attempts to authenticate* (and therefore needs real creds).
+// Title-only check — yaml-level matches were too greedy and dropped UI tests
+// that merely tap an "OK" button on a login screen.
+export function isLoginAttempt(flow: MaestroFlow): boolean {
+  const titleText = (flow.feature + ' ' + flow.scenario).toLowerCase();
+  if (!LOGIN_PATTERNS.some((re) => re.test(titleText))) return false;
+  if (NEGATIVE_AUTH_KEYWORDS.some((kw) => titleText.includes(kw))) return false;
+  return true;
 }
 
-function filterAuthScenarios(flows: MaestroFlow[], authType: string | undefined): MaestroFlow[] {
-  if (!authType || authType === 'none') return flows.filter((f) => !isLoginScenario(f));
+export function filterAuthScenarios(flows: MaestroFlow[], authType: string | undefined): MaestroFlow[] {
+  if (!authType || authType === 'none') return flows.filter((f) => !isLoginAttempt(f));
   return flows;
 }
 
@@ -48,13 +70,21 @@ export function hasUsableCreds(auth?: AuthConfig): boolean {
 }
 
 // When the app requires auth and no creds are configured, post-auth flows
-// can never pass — drop them before the AI call. A flow is "pre-auth-only"
-// if every screen it touches is in launchState.authScreens.
+// can never pass — drop them before the AI call. The pre-auth surface a flow
+// may touch is: declared authScreens ∪ cold-launch preAuthGates ∪ initialScreen.
+// Pre-auth gates (language pickers, terms acceptance, paywalls) are walked on
+// every cold launch before login is even reachable, so flows that cover them
+// must survive. Without this expansion, only pure login flows survived and the
+// downstream auth filter then dropped them all → guaranteed zero-flow crash.
 export function filterFlowsByLaunchState(flows: Flow[], launchState?: LaunchState, credsAvailable?: boolean): Flow[] {
   if (!launchState || !launchState.requiresAuth || credsAvailable) return flows;
   if (launchState.authScreens.length === 0) return flows;
-  const authScreenSet = new Set(launchState.authScreens);
-  return flows.filter((flow) => flow.screens.length > 0 && flow.screens.every((s) => authScreenSet.has(s)));
+  const preAuthSurface = new Set<string>([
+    ...launchState.authScreens,
+    ...(launchState.preAuthGates?.map((g) => g.screen) ?? []),
+    launchState.initialScreen,
+  ]);
+  return flows.filter((flow) => flow.screens.length > 0 && flow.screens.every((s) => preAuthSurface.has(s)));
 }
 
 export async function runScenarioBrain(context: PipelineContext): Promise<ModuleResult> {
@@ -150,7 +180,7 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
       logger.log('Maestro flows generated (from PR diff)', { flows: flows.length });
     }
 
-    const filtered = filterAuthScenarios(flows, context.authConfig?.type);
+    let filtered = filterAuthScenarios(flows, context.authConfig?.type);
     if (filtered.length < flows.length) {
       logger.log('Auth scenarios filtered (no usable auth config)', {
         before: flows.length,
@@ -159,6 +189,22 @@ export async function runScenarioBrain(context: PipelineContext): Promise<Module
         authConfigType: context.authConfig?.type ?? 'none',
       });
     }
+
+    // If both filters together left zero flows AND we haven't already gone the diff route,
+    // fall back to PR-diff generation. Without this, TestWriter aborts the whole pipeline
+    // (e.g. an auth-required app with no creds where every critical flow ended up being
+    // a real-login attempt).
+    if (filtered.length === 0 && eligibleFlows.length > 0 && context.diffFiles.length > 0) {
+      logger.log('All flows filtered out — falling back to PR-diff generation');
+      const diffSummary = context.diffFiles
+        .slice(0, 15)
+        .map((f) => `${f.status} ${f.path}\n${f.patch?.slice(0, 500) || ''}`)
+        .join('\n---\n');
+      const diffFlows = await author.generateFromDiff(diffSummary, inputs);
+      filtered = filterAuthScenarios(diffFlows, context.authConfig?.type);
+      logger.log('Diff-based fallback flows generated', { flows: filtered.length });
+    }
+
     context.maestroFlows = filtered;
     return { moduleName: 'ScenarioBrain', status: 'success', data: context.maestroFlows };
   } catch (error) {

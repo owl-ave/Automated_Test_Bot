@@ -1,8 +1,18 @@
-import { hasUsableCreds, filterFlowsByLaunchState, capFlowsByPriority } from '../src/modules/scenario-brain';
-import { AuthConfig, Flow, LaunchState } from '../src/types';
+import {
+  hasUsableCreds,
+  filterFlowsByLaunchState,
+  capFlowsByPriority,
+  filterAuthScenarios,
+  isLoginAttempt,
+} from '../src/modules/scenario-brain';
+import { AuthConfig, Flow, LaunchState, MaestroFlow } from '../src/types';
 
 function flow(name: string, screens: string[], priority: Flow['priority'] = 'high', affectedByPr = false): Flow {
   return { name, screens, priority, affectedByPr };
+}
+
+function maestroFlow(feature: string, scenario: string, yaml = ''): MaestroFlow {
+  return { feature, scenario, appId: 'com.x', fileName: 'f.yaml', yaml, issues: [] };
 }
 
 const launchStateRequiresAuth: LaunchState = {
@@ -11,6 +21,7 @@ const launchStateRequiresAuth: LaunchState = {
   authScreens: ['LoginView', 'SignupView', 'ForgotPasswordView'],
   postAuthEntry: 'HomeView',
   authMechanism: 'email_password',
+  preAuthGates: [],
   source: 'ai',
 };
 
@@ -19,6 +30,7 @@ const launchStateNoAuth: LaunchState = {
   requiresAuth: false,
   authScreens: [],
   authMechanism: 'unknown',
+  preAuthGates: [],
   source: 'heuristic',
 };
 
@@ -87,6 +99,79 @@ describe('filterFlowsByLaunchState', () => {
     const withEmpty = [...flows, flow('Mystery', [])];
     const result = filterFlowsByLaunchState(withEmpty, launchStateRequiresAuth, false);
     expect(result.map((f) => f.name)).not.toContain('Mystery');
+  });
+
+  it('keeps flows touching pre-auth gate screens (e.g. language picker, terms)', () => {
+    const ls: LaunchState = {
+      ...launchStateRequiresAuth,
+      initialScreen: 'LanguageGateView',
+      authScreens: ['LoginView'],
+      preAuthGates: [
+        { screen: 'LanguageGateView', dismiss: { type: 'tap', target: 'English' } },
+        { screen: 'TermsView', dismiss: { type: 'tap', target: 'Accept' } },
+      ],
+    };
+    const fs: Flow[] = [
+      flow('Pick Language', ['LanguageGateView']),
+      flow('Accept Terms', ['TermsView']),
+      flow('Walk gates to login', ['LanguageGateView', 'TermsView', 'LoginView']),
+      flow('Edit Profile', ['HomeView', 'ProfileView']),
+    ];
+    const result = filterFlowsByLaunchState(fs, ls, false);
+    expect(result.map((f) => f.name)).toEqual(['Pick Language', 'Accept Terms', 'Walk gates to login']);
+  });
+
+  it('keeps flow touching only the initial screen even when not in authScreens', () => {
+    const ls: LaunchState = {
+      ...launchStateRequiresAuth,
+      initialScreen: 'SplashView',
+      authScreens: ['LoginView'],
+    };
+    const fs: Flow[] = [
+      flow('Splash renders', ['SplashView']),
+      flow('Login renders', ['LoginView']),
+      flow('Profile', ['ProfileView']),
+    ];
+    const result = filterFlowsByLaunchState(fs, ls, false);
+    expect(result.map((f) => f.name)).toEqual(['Splash renders', 'Login renders']);
+  });
+});
+
+describe('isLoginAttempt / filterAuthScenarios', () => {
+  it('flags scenarios that perform a real login', () => {
+    expect(isLoginAttempt(maestroFlow('Authentication', 'User logs in successfully'))).toBe(true);
+    expect(isLoginAttempt(maestroFlow('Onboarding', 'New user signs up'))).toBe(true);
+    expect(isLoginAttempt(maestroFlow('Auth', 'Authenticate with biometric'))).toBe(true);
+  });
+
+  it('exempts negative/UI scenarios that touch login screens but do not authenticate', () => {
+    expect(isLoginAttempt(maestroFlow('Login', 'Login screen renders correctly'))).toBe(false);
+    expect(isLoginAttempt(maestroFlow('Login', 'Sign-in button shows error on empty submit'))).toBe(false);
+    expect(isLoginAttempt(maestroFlow('Login', 'Invalid email shows validation error'))).toBe(false);
+    expect(isLoginAttempt(maestroFlow('Signup', 'Wrong OTP shows error'))).toBe(false);
+  });
+
+  it('does not flag non-auth scenarios at all', () => {
+    expect(isLoginAttempt(maestroFlow('Profile', 'Edit profile and save'))).toBe(false);
+  });
+
+  it('filterAuthScenarios drops only real-login attempts when authType is none', () => {
+    const flows = [
+      maestroFlow('Login', 'User logs in successfully'),
+      maestroFlow('Login', 'Login screen renders'),
+      maestroFlow('Profile', 'Edit profile'),
+    ];
+    const out = filterAuthScenarios(flows, 'none');
+    expect(out.map((f) => f.scenario)).toEqual(['Login screen renders', 'Edit profile']);
+  });
+
+  it('filterAuthScenarios is a no-op when creds are configured', () => {
+    const flows = [
+      maestroFlow('Login', 'User logs in successfully'),
+      maestroFlow('Profile', 'Edit profile'),
+    ];
+    const out = filterAuthScenarios(flows, 'email_password');
+    expect(out).toEqual(flows);
   });
 });
 
